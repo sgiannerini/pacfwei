@@ -23,3 +23,5 @@ Packaged: 2026-11-02 15:05:19 UTC; Giannerini
 Author: Simone Giannerini [aut] (Original 2007 R and Fortran implementations),
   Local Maintainer [cre]
 Maintainer: Local Maintainer <simone.giannerini@uniud.it>
+URL: https://github.com/sgiannerini/pacfwei
+BugReports: https://github.com/sgiannerini/pacfwei/issues
