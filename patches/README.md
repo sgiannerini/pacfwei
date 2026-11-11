@@ -38,6 +38,5 @@ HTML conversion checks.
 **A full build and check of R itself has not been performed.** Rebuild R,
 including `stats` and `datasets`, and run its checks before proposing upstream
 integration. The patch includes native registration and Unix/Windows build
-entries. It is a proposed change and has not been accepted into R.
+entries.
 
-The alternative patch for the supplied local source archive is not retained.
