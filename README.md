@@ -127,6 +127,12 @@ unchanged.
   components or large lag orders can fail; neither method regularizes
   the covariance matrices or clips the correlations.
 
+## Patch for R SVN
+
+The [R SVN patch](patches/stats-pacf-wei-trunk.patch) integrates these changes
+into R itself. See the [patch instructions](patches/README.md) for the target
+revision, application commands, and validation status.
+
 ## References
 
 Wei, W. W. S. (2006). *Time Series Analysis: Univariate and Multivariate
