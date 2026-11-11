@@ -83,8 +83,8 @@ residual vectors at times $t+s$ and $t$, respectively. The returned entry is
 
 $$
 P_R(s)_{ij} =
-\frac{\operatorname{Cov}(u_i,v_j)}
-{\sqrt{\operatorname{Var}(u_i)\operatorname{Var}(v_j)}}.
+\frac{Cov(u_i,v_j)}
+{\sqrt{Var(u_i)Var(v_j)}}.
 $$
 
 These are componentwise residual correlations. They do not additionally
