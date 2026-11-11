@@ -1,0 +1,25 @@
+Package: pacfwei
+Type: Package
+Title: Componentwise Partial Autocorrelations for Vector Time Series
+Version: 0.2.0
+Authors@R: c(person("Simone", "Giannerini", role = "aut",
+    email = "simone.giannerini@uniud.it",
+    comment = "Original 2007 R and Fortran implementations"),
+    person("Local", "Maintainer", role = "cre", email = "simone.giannerini@uniud.it"))
+Description: Computes Wei's partial autocorrelations through one function with
+    interchangeable C and R recursions, using C by default. Preserves R's
+    positive-lag convention and standard acf-class output. Documents the residual
+    correlation definition and forward-backward recursion. Includes the annual
+    Lydia Pinkham advertising and sales data for illustrating the method.
+License: GPL (>= 2)
+Encoding: UTF-8
+Depends: R (>= 4.0.0)
+Imports: stats, graphics
+Suggests: knitr, rmarkdown
+LazyData: true
+NeedsCompilation: yes
+RoxygenNote: 7.3.3
+Packaged: 2026-11-02 15:05:19 UTC; Giannerini
+Author: Simone Giannerini [aut] (Original 2007 R and Fortran implementations),
+  Local Maintainer [cre]
+Maintainer: Local Maintainer <simone.giannerini@uniud.it>

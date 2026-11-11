@@ -1,0 +1,51 @@
+#' Lydia Pinkham advertising and sales
+#'
+#' Annual advertising expenditure and sales revenue for Lydia Pinkham's
+#' vegetable compound, for the 54 years from 1907 through 1960. These bivariate
+#' series are used in Wei's multivariate time series example.
+#'
+#' @format A data frame with 54 rows in chronological order and two integer
+#'   columns:
+#' \describe{
+#'   \item{advertising}{Annual advertising expenditure, in thousands of US dollars.}
+#'   \item{sales}{Annual sales revenue, in thousands of US dollars.}
+#' }
+#' Row 1 corresponds to 1907 and row 54 to 1960. Calendar years are not stored
+#' as a column or time-series attribute. Use
+#' \code{ts(pinkham, start = 1907, frequency = 1)} to add annual time metadata.
+#'
+#' @details
+#' The data are stored in levels, without transformation or differencing.
+#' First-differencing both columns gives 53 observations for the multivariate
+#' partial-correlation example in Wei (2006), Section 16.7. The examples below
+#' retain advertising as the first component and sales as the second.
+#'
+#' \code{pacf_wei()} returns matrices in R's lag convention, with the later
+#' component in rows and the earlier component in columns. Transpose each lag
+#' matrix with \code{aperm(result$acf, c(1, 3, 2))} to obtain Wei's theoretical
+#' orientation. Table 16.2 appears to use a different orientation at lag one
+#' than at the remaining lags; use the stated convention when comparing results.
+#'
+#' @source The supplied \file{pinkham.rda}, preserved without changes to its
+#'   values, column order, or data-frame structure. For the advertising and
+#'   sales data, see Palda (1965) and Wei (2006), Sections 14.3.5 and 16.7.
+#' @references
+#' Wei, W. W. S. (2006). \emph{Time Series Analysis: Univariate and Multivariate
+#' Methods}, second edition. Pearson Prentice Hall. Sections 14.3.5 and 16.7.
+#'
+#' Palda, K. S. (1965). The Measurement of Cumulative Advertising Effects.
+#' \emph{The Journal of Business}, \emph{38}(2), 162--179.
+#' \url{http://www.jstor.org/stable/2350780}
+#' @seealso \code{\link{pacf_wei}}, \code{\link[stats]{diff.ts}}
+#' @examples
+#' data("pinkham", package = "pacfwei")
+#' head(pinkham)
+#' levels <- ts(pinkham, start = 1907, frequency = 1)
+#' changes <- diff(levels)
+#' result <- pacf_wei(changes, lag.max = 6, plot = FALSE)
+#' round(result$acf[1:2, , ], 3)
+#' plot(result)
+#' @docType data
+#' @keywords datasets
+#' @name pinkham
+"pinkham"
