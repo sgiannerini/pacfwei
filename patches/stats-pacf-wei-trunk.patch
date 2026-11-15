@@ -1,29 +1,31 @@
 diff --git a/src/library/stats/R/acf.R b/src/library/stats/R/acf.R
-index 672545a..29c7c83 100644
+index 672545a..4a43f3b 100644
 --- a/src/library/stats/R/acf.R
 +++ b/src/library/stats/R/acf.R
-@@ -62,28 +62,31 @@ acf <-
+@@ -62,25 +62,26 @@ acf <-
  pacf <- function(x, lag.max, plot, na.action, ...) UseMethod("pacf")
-
+ 
  pacf.default <- function(x, lag.max = NULL, plot = TRUE,
 -                         na.action = na.fail, ...)
 +                         na.action = na.fail, ..., method = c("C", "R"))
  {
 +    method <- match.arg(method)
++    .pacf_method_dots(match.call(expand.dots = FALSE)[["..."]])
      series <- deparse1(substitute(x))
 -    x <- drop(na.action(as.ts(x)))  # use univariate code for a single series
 -    if(!is.numeric(x)) stop("'x' must be numeric")
 +    x <- na.action(as.ts(x))
++    if (!is.numeric(x) || is.complex(x)) stop("'x' must be real numeric")
 +    if (NROW(x) < 2L) stop("'x' must have at least two observations")
 +    x <- drop(x)  # use univariate code for a single series
-+    if (!is.numeric(x) || is.complex(x)) stop("'x' must be real numeric")
      x.freq <- frequency(x)
      sampleT <- NROW(x)
 -    if (is.null(lag.max))
 -        lag.max <- floor(10 * log10(sampleT / NCOL(x)))
 -    lag.max <- min(lag.max, sampleT - 1)
 -    if (lag.max < 1) stop("'lag.max' must be at least 1")
-
++    lag.max <- .pacf_lag_max(lag.max, sampleT, NCOL(x))
+ 
      if(is.matrix(x)) {
 -        if(anyNA(x)) stop("NAs in 'x'")
 +        pacf <- .pacf_wei_mts(x, lag.max, method)
@@ -37,14 +39,7 @@ index 672545a..29c7c83 100644
          lag <- outer(1L:lag.max, lag/x.freq)
          snames <- colnames(x)
      } else {
-+        if (is.null(lag.max))
-+            lag.max <- floor(10 * log10(sampleT / NCOL(x)))
-+        lag.max <- min(lag.max, sampleT - 1)
-+        if (lag.max < 1) stop("'lag.max' must be at least 1")
-         x <- scale(x, TRUE, FALSE)
-         acf <- drop(acf(x, lag.max = lag.max, plot = FALSE,
-                         na.action = na.action)$acf)
-@@ -256,3 +259,88 @@ print.acf <- function(x, digits = 3L, ...)
+@@ -256,3 +257,160 @@ print.acf <- function(x, digits = 3L, ...)
      }
      invisible(x)
  }
@@ -54,6 +49,26 @@ index 672545a..29c7c83 100644
 +# The acf-class wrapper follows stats::pacf.default, Copyright (C) R Core Team,
 +# distributed under the GNU General Public License, version 2 or later.
 +
++.pacf_lag_max <- function(lag.max, n, m) {
++    if (is.null(lag.max))
++        lag.max <- max(1, floor(10 * log10(n / m)))
++    if (!is.numeric(lag.max) || is.complex(lag.max) ||
++        length(lag.max) != 1L || is.na(lag.max) || lag.max < 1)
++        stop("'lag.max' must be a real numeric scalar of at least 1")
++    as.integer(min(floor(lag.max), n - 1L))
++}
++
++.pacf_method_dots <- function(dots) {
++    nm <- names(dots)
++    if (is.null(nm)) return(invisible(NULL))
++    partial <- !is.na(nm) & nzchar(nm) & nchar(nm) < nchar("method") &
++        startsWith("method", nm)
++    if (any(partial))
++        stop(sprintf("argument '%s' must be named 'method' in full", nm[which(partial)[1L]]),
++             call. = FALSE)
++    invisible(NULL)
++}
++
 +.pacf_wei_prepare <- function(x, lag.max = NULL) {
 +    x <- as.matrix(x)
 +    if (!is.numeric(x) || is.complex(x) || any(!is.finite(x)))
@@ -62,55 +77,106 @@ index 672545a..29c7c83 100644
 +    m <- ncol(x)
 +    if (n < 2L || m < 1L)
 +        stop("'x' must have at least two rows and one column")
-+    if (is.null(lag.max)) lag.max <- floor(10 * log10(n / m))
-+    if (length(lag.max) != 1L || !is.numeric(lag.max) ||
-+        is.complex(lag.max) || !is.finite(lag.max) || lag.max < 1)
-+        stop("'lag.max' must be a finite number of at least 1")
-+    lag.max <- as.integer(min(floor(lag.max), n - 1L))
++    lag.max <- .pacf_lag_max(lag.max, n, m)
++    snames <- colnames(x)
 +    magnitude <- apply(abs(x), 2L, max)
 +    if (any(magnitude == 0)) stop("zero-variance series in 'x'")
-+    x <- sweep(x, 2L, magnitude, "/")
++    # Binary scaling protects the range without rounding away large-offset
++    # differences through an arbitrary divisor before centering.
++    emin <- .Machine$double.min.exp - .Machine$double.digits + 1L
++    emax <- .Machine$double.max.exp - 1L
++    exponent <- pmax(emin, pmin(emax, floor(log2(magnitude))))
++    x <- sweep(x, 2L, 2^exponent, "/")
 +    x <- sweep(x, 2L, colMeans(x), "-")
++    magnitude <- apply(abs(x), 2L, max)
++    if (any(!is.finite(magnitude) | magnitude <= 0))
++        stop("zero-variance series in 'x'")
++    x <- sweep(x, 2L, magnitude, "/")
 +    scales <- sqrt(colMeans(x * x))
 +    if (any(!is.finite(scales) | scales <= 0))
 +        stop("zero-variance series in 'x'")
 +    x <- sweep(x, 2L, scales, "/")
++    map <- diag(m)
++    if (lag.max > 1L) {
++        if (m >= n) stop("numerically rank-deficient series in 'x'")
++        decomposition <- svd(x, nu = m, nv = m)
++        tolerance <- max(n, m) * .Machine$double.eps * decomposition$d[1L]
++        if (any(!is.finite(decomposition$d)) ||
++            any(decomposition$d <= tolerance))
++            stop("numerically rank-deficient series in 'x'")
++        # X = W %*% map. Covariances are estimated directly from W, rather
++        # than whitening an already ill-conditioned covariance sequence.
++        map <- sweep(t(decomposition$v), 1L, decomposition$d / sqrt(n), "*")
++        x <- sqrt(n) * decomposition$u
++    }
 +    list(cov = stats::acf(x, type = "covariance", lag.max = lag.max,
 +                         plot = FALSE, demean = FALSE)$acf,
-+         lag.max = lag.max, nser = m, snames = colnames(x))
++         map = map, lag.max = lag.max, nser = m, snames = snames)
 +}
 +
-+.pacf_wei_R <- function(cov) {
++.pacf_wei_R <- function(cov, map = NULL) {
 +    d <- dim(cov)
 +    if (!is.double(cov) || length(d) != 3L || d[1L] < 2L ||
 +        d[2L] < 1L || d[2L] != d[3L] || any(!is.finite(cov)))
 +        stop("'cov' must be a finite double array with dimensions (p+1,m,m)")
 +    p <- d[1L] - 1L
 +    m <- d[2L]
++    if (is.null(map)) map <- diag(m)
++    if (!is.double(map) || !identical(dim(map), c(m, m)) || any(!is.finite(map)))
++        stop("'map' must be a finite double matrix with dimensions (m,m)")
 +    G <- lapply(seq_len(p + 1L), function(k) matrix(cov[k, , ], m, m))
++    symmetry.tolerance <- 64 * m * .Machine$double.eps * max(1, norm(G[[1L]], "1"))
++    if (max(abs(G[[1L]] - t(G[[1L]]))) > symmetry.tolerance)
++        stop("lag-zero covariance must be symmetric")
++    G[[1L]] <- (G[[1L]] + t(G[[1L]])) / 2
 +    vf <- vb <- G[[1L]]
 +    forward <- backward <- list()
 +    out <- array(0, c(p, m, m))
-+    right.solve <- function(B, A, s) {
-+        tryCatch(t(solve(t(A), t(B))), error = function(e)
-+            stop(sprintf("singular residual covariance at lag %d: %s",
-+                         s, conditionMessage(e)), call. = FALSE))
++    coefficient.tolerance <- 64 * m * .Machine$double.eps
++    covariance.check <- function(U, V, K, s) {
++        H <- rbind(cbind(U, K), cbind(t(K), V))
++        if (any(!is.finite(H)))
++            stop(sprintf("nonfinite residual covariance at lag %d", s))
++        tolerance <- 64 * (2 * m) * .Machine$double.eps * max(1, norm(H, "1"))
++        if (min(eigen(H, symmetric = TRUE, only.values = TRUE)$values) < -tolerance)
++            stop(sprintf("invalid joint residual covariance at lag %d", s))
++    }
++    factor <- function(A, s, side) {
++        R <- tryCatch(chol(A), error = function(e)
++            stop(sprintf("non-positive-definite %s residual covariance at lag %d",
++                         side, s), call. = FALSE))
++        condition <- rcond(A)
++        if (!is.finite(condition) || condition < sqrt(.Machine$double.eps))
++            stop(sprintf("numerically singular %s residual covariance at lag %d",
++                         side, s), call. = FALSE)
++        R
++    }
++    right.solve <- function(B, R) {
++        t(backsolve(R, forwardsolve(t(R), t(B))))
 +    }
 +    for (s in seq_len(p)) {
 +        K <- G[[s + 1L]]
 +        if (s > 1L) for (k in seq_len(s - 1L))
 +            K <- K - forward[[k]] %*% G[[s - k + 1L]]
-+        u <- diag(vf)
-+        v <- diag(vb)
++        covariance.check(vf, vb, K, s)
++        U <- crossprod(map, vf %*% map)
++        V <- crossprod(map, vb %*% map)
++        H <- crossprod(map, K %*% map)
++        u <- diag(U)
++        v <- diag(V)
 +        if (any(!is.finite(c(u, v))) || any(c(u, v) <= 0))
 +            stop(sprintf("nonpositive residual variance at lag %d", s))
-+        value <- K / outer(sqrt(u), sqrt(v))
++        value <- H / outer(sqrt(u), sqrt(v))
 +        if (any(!is.finite(value)))
 +            stop(sprintf("nonfinite partial correlation at lag %d", s))
-+        out[s, , ] <- value
++        if (any(abs(value) > 1 + coefficient.tolerance))
++            stop(sprintf("partial correlation exceeds its numerical bound at lag %d", s))
++        out[s, , ] <- pmax(-1, pmin(1, value))
 +        if (s == p) break
-+        Fs <- right.solve(K, vb, s)
-+        Bs <- right.solve(t(K), vf, s)
++        Rf <- factor(vf, s, "forward")
++        Rb <- factor(vb, s, "backward")
++        Fs <- right.solve(K, Rb)
++        Bs <- right.solve(t(K), Rf)
 +        old.forward <- forward
 +        old.backward <- backward
 +        if (s > 1L) for (k in seq_len(s - 1L)) {
@@ -129,24 +195,38 @@ index 672545a..29c7c83 100644
 +
 +.pacf_wei_mts <- function(x, lag.max, method) {
 +    z <- .pacf_wei_prepare(x, lag.max)
-+    out <- if (method == "C") .Call(C_pacf_wei_cov, z$cov) else .pacf_wei_R(z$cov)
++    out <- if (method == "C") .Call(C_pacf_wei_cov, z$cov, z$map) else
++        .pacf_wei_R(z$cov, z$map)
 +    dimnames(out) <- list(as.character(seq_len(z$lag.max)), z$snames, z$snames)
 +    out
 +}
 diff --git a/src/library/stats/man/acf.Rd b/src/library/stats/man/acf.Rd
-index 38c5e26..81a7e68 100644
+index 38c5e26..67465bc 100644
 --- a/src/library/stats/man/acf.Rd
 +++ b/src/library/stats/man/acf.Rd
 @@ -25,7 +25,7 @@ acf(x, lag.max = NULL,
  pacf(x, lag.max, plot, na.action, \dots)
-
+ 
  \method{pacf}{default}(x, lag.max = NULL, plot = TRUE, na.action = na.fail,
 -    ...)
 +    ..., method = c("C", "R"))
-
+ 
  ccf(x, y, lag.max = NULL, type = c("correlation", "covariance"),
      plot = TRUE, na.action = na.fail, \dots)
-@@ -49,6 +49,9 @@ ccf(x, y, lag.max = NULL, type = c("correlation", "covariance"),
+@@ -39,7 +39,11 @@ ccf(x, y, lag.max = NULL, type = c("correlation", "covariance"),
+     Default is \eqn{10\log_{10}(N/m)}{10*log10(N/m)} where \eqn{N} is the
+     number of observations and \eqn{m} the number of series.  Will
+     be automatically limited to one less than the number of observations
+-    in the series.}
++    in the series. For \code{pacf}, the default has a minimum of one;
++    a supplied lag must be a real numeric scalar of at least one.
++    Positive fractional values are floored, and \code{Inf} requests the
++    cap. This validation applies to univariate and multivariate input.
++    A capped order can still be numerically unreliable.}
+   \item{type}{character string giving the type of \abbr{acf} to be computed.
+     Allowed values are
+     \code{"correlation"} (the default), \code{"covariance"} or
+@@ -49,6 +53,9 @@ ccf(x, y, lag.max = NULL, type = c("correlation", "covariance"),
      values. \code{na.pass} can be used.}
    \item{demean}{logical.  Should the covariances be about the sample
      means?}
@@ -154,12 +234,12 @@ index 38c5e26..81a7e68 100644
 +    \code{"R"}. Must be named because it follows \code{...}.
 +    Univariate input uses the existing implementation for either choice.}
    \item{\dots}{further arguments to be passed to \code{plot.acf}.}
-
+ 
    \item{i}{a set of lags (time differences) to retain.}
-@@ -85,9 +88,71 @@ ccf(x, y, lag.max = NULL, type = c("correlation", "covariance"),
+@@ -85,9 +92,98 @@ ccf(x, y, lag.max = NULL, type = c("correlation", "covariance"),
    and may contain missing values.  Missing values are not allowed when
    computing the \abbr{PACF} of a multivariate time series.
-
+ 
 -  The partial correlation coefficient is estimated by fitting
 -  autoregressive models of successively higher orders up to
 -  \code{lag.max}.
@@ -169,69 +249,96 @@ index 38c5e26..81a7e68 100644
 +  autoregression coefficients; \code{ar.yw(x)$partialacf} retains its
 +  regression-coefficient interpretation.
 +
-+\strong{Definition.} Let \eqn{Z_t} be a centered stationary vector process.
-+At lag \eqn{s}, project the vector observations \eqn{Z_{t+s}} and \eqn{Z_t}
-+on all the intervening vectors \eqn{Z_{t+1},\ldots,Z_{t+s-1}} and form residuals
-+\deqn{u_{s-1,t+s}=Z_{t+s}-\sum_{k=1}^{s-1}\alpha_{s-1,k}Z_{t+s-k},}
-+\deqn{v_{s-1,t}=Z_t-\sum_{k=1}^{s-1}\beta_{s-1,k}Z_{t+k}.}
-+These are linear projections, not an assumption of Gaussian conditional
-+distributions. Write \eqn{U_s=\operatorname{Var}(u_{s-1,t+s})},
-+\eqn{V_s=\operatorname{Var}(v_{s-1,t})} and
-+\eqn{K_s=\operatorname{Cov}(u_{s-1,t+s},v_{s-1,t})}.
-+Let \eqn{D_U(s)} and \eqn{D_V(s)} be diagonal matrices of marginal residual
-+standard deviations. In R's lag convention, the returned matrix is
-+\deqn{P_R(s)=D_U(s)^{-1}K_sD_V(s)^{-1}.}
-+Consequently entry \eqn{(i,j)} is the correlation between the residuals for
-+component \eqn{i} at time \eqn{t+s} and component \eqn{j} at time \eqn{t},
-+after projecting out the intervening vectors. The individual lag matrix is
-+generally nonsymmetric. There is no additional conditioning on the other
-+components at time \eqn{t} or \eqn{t+s}.
++\strong{Definition.} Let \eqn{Z_t}{Z[t]} be a centered stationary vector process.
++At lag \eqn{s}{s}, project the observations at times \eqn{t+s}{t+s} and
++\eqn{t}{t} on every intervening vector and form residuals
++\deqn{u_{s-1,t+s}=Z_{t+s}-\sum_{k=1}^{s-1}\alpha_{s-1,k}Z_{t+s-k}.}{
++u = Z[t+s] - sum(k = 1,...,s-1) alpha[s-1,k] Z[t+s-k].}
++\deqn{v_{s-1,t}=Z_t-\sum_{k=1}^{s-1}\beta_{s-1,k}Z_{t+k}.}{
++v = Z[t] - sum(k = 1,...,s-1) beta[s-1,k] Z[t+k].}
++These are linear projections, without a Gaussian distribution assumption.
++Write \eqn{U_s=\operatorname{Var}(u)}{U[s] = Var(u)},
++\eqn{V_s=\operatorname{Var}(v)}{V[s] = Var(v)} and
++\eqn{K_s=\operatorname{Cov}(u,v)}{K[s] = Cov(u, v)}. Let
++\eqn{D_U(s)}{D_U[s]} and \eqn{D_V(s)}{D_V[s]} be diagonal matrices of
++marginal residual standard deviations. The returned lag matrix is
++\deqn{P_R(s)=D_U(s)^{-1}K_sD_V(s)^{-1}.}{
++P_R[s] = inverse(D_U[s]) K[s] inverse(D_V[s]).}
++Entry \eqn{(i,j)}{(i,j)} correlates the residual for component \eqn{i}{i}
++at time \eqn{t+s}{t+s} with that for component \eqn{j}{j} at time \eqn{t}{t}.
++There is no additional conditioning on the other components at those times.
++The lag matrices are generally nonsymmetric.
 +
 +\strong{Relation to Wei.} Wei (2006, Section 16.5.3, pp. 408--414) uses
-+\eqn{\Gamma(s)=\operatorname{Cov}(Z_t,Z_{t+s})} and defines
-+\eqn{P(s)=D_V(s)^{-1}V_{vu}(s)D_U(s)^{-1}} in (16.5.43),
-+with \eqn{V_{vu}(s)=K_s'}.
-+Thus \eqn{P_R(s)=P(s)'}. This transpose is required for consistency with
-+\code{stats::acf()}, whose positive-lag entry \code{result$acf[s + 1, i, j]} uses
-+component \eqn{i} at time \eqn{t+s} and component \eqn{j} at time \eqn{t}.
-+The partial autoregression matrix in (16.5.44) is instead
-+\eqn{K_sV_s^{-1}}. Its entries need not lie in \eqn{[-1,1]}.
-+These definitions coincide for a univariate stationary process.
++\eqn{\Gamma(s)=\operatorname{Cov}(Z_t,Z_{t+s})}{Gamma[s] = Cov(Z[t], Z[t+s])}
++and the transpose of the returned matrix in (16.5.43):
++\eqn{P_R(s)=P(s)'}{P_R[s] = transpose(P[s])}.
++This follows R's \code{stats::acf()} convention: \code{result$acf[s + 1, i, j]} uses
++component \eqn{i}{i} at time \eqn{t+s}{t+s} and component \eqn{j}{j} at time
++\eqn{t}{t}. The partial autoregression matrix in (16.5.44) is instead
++\eqn{K_s V_s^{-1}}{K[s] inverse(V[s])}; its entries need not lie in
++\eqn{[-1,1]}{[-1,1]}. The definitions coincide for a univariate process.
 +
-+\strong{Recursion.} With \eqn{C_h=\operatorname{Cov}(Z_{t+h},Z_t)}, initialize
-+\eqn{U_1=V_1=C_0}. Using forward and backward coefficients \eqn{F} and
-+\eqn{B} from the previous order, compute
-+\deqn{K_s=C_s-\sum_{k=1}^{s-1}F_{s-1,k}C_{s-k},\qquad
-+F_{s,s}=K_sV_s^{-1},\quad B_{s,s}=K_s'U_s^{-1}.}
-+For \eqn{1\leq k<s}, update both coefficient sets from the old order:
-+\deqn{F_{s,k}=F_{s-1,k}-F_{s,s}B_{s-1,s-k},\qquad
-+B_{s,k}=B_{s-1,k}-B_{s,s}F_{s-1,s-k}.}
++\strong{Recursion.} With
++\eqn{C_h=\operatorname{Cov}(Z_{t+h},Z_t)}{C[h] = Cov(Z[t+h], Z[t])},
++initialize \eqn{U_1=V_1=C_0}{U[1] = V[1] = C[0]}. Using coefficient
++matrices from the previous order, compute
++\deqn{K_s=C_s-\sum_{k=1}^{s-1}F_{s-1,k}C_{s-k}.}{
++K[s] = C[s] - sum(k = 1,...,s-1) F[s-1,k] C[s-k].}
++\deqn{F_{s,s}=K_s V_s^{-1},\quad B_{s,s}=K_s' U_s^{-1}.}{
++F[s,s] = K[s] inverse(V[s]); B[s,s] = transpose(K[s]) inverse(U[s]).}
++For \eqn{1\leq k<s}{1 <= k < s}, update both sets from the old order:
++\deqn{F_{s,k}=F_{s-1,k}-F_{s,s}B_{s-1,s-k}.}{
++F[s,k] = F[s-1,k] - F[s,s] B[s-1,s-k].}
++\deqn{B_{s,k}=B_{s-1,k}-B_{s,s}F_{s-1,s-k}.}{
++B[s,k] = B[s-1,k] - B[s,s] F[s-1,s-k].}
 +The residual covariances for the next order are
-+\deqn{U_{s+1}=U_s-F_{s,s}K_s',\qquad
-+V_{s+1}=V_s-B_{s,s}K_s.}
-+This is the forward/backward recursion of (16.5.50)--(16.5.51), expressed
-+in R's covariance convention. The displayed inverses describe the mathematics;
-+implementations solve systems without explicitly forming matrix inverses.
++\deqn{U_{s+1}=U_s-F_{s,s}K_s',\quad V_{s+1}=V_s-B_{s,s}K_s.}{
++U[s+1] = U[s] - F[s,s] transpose(K[s]); V[s+1] = V[s] - B[s,s] K[s].}
++These are (16.5.50)--(16.5.51) in R's covariance convention.
++The displayed inverses specify the mathematics; both implementations solve
++systems using Cholesky factors without explicitly forming matrix inverses.
 +
-+\strong{Estimation and numerical behavior.} Covariances are centered,
-+common-denominator estimates from \code{stats::acf()}, with denominator \eqn{n}.
-+Positive column rescaling improves numerical conditioning without changing
-+the estimator. For a valid joint covariance and positive residual variances,
-+individual coefficients are bounded by one in modulus, up to roundoff.
-+At lag one they equal ordinary lag-one cross-correlations.
-+Neither implementation clips correlations or adds a regularization term.
-+Singular or numerically singular regression covariances cause errors.
-+Short samples relative to the dimension and lag can therefore fail.
-+The last requested lag requires no further coefficient solve; lag one is
-+defined even for redundant columns having positive marginal variance.
-+Both implementations use \eqn{O(m^2 p)} storage and dense
-+\eqn{O(m^3 p^2)} arithmetic, where \eqn{p} is the maximum lag.
-+They can differ by floating point roundoff near singularity.
++\strong{Numerical stabilization.} Power-of-two prescaling protects the
++floating-point range before centering. Arbitrary marginal normalization
++follows centering, avoiding loss of large-offset differences. Covariance
++estimates use \code{stats::acf()} with denominator \eqn{n}{n}.
++For more than one lag, a full-rank SVD of the centered, marginally normalized
++observation matrix provides \eqn{X=W A}{X = W A}, with
++\eqn{W'W/n=I}{transpose(W) W / n = I}. The recursion uses covariances
++estimated directly from \eqn{W}{W}. Before normalization, its residual
++matrices are transformed back:
++\deqn{U_X=A'U_W A,\quad V_X=A'V_W A,\quad K_X=A'K_W A.}{
++U_X = transpose(A) U_W A; V_X = transpose(A) V_W A; K_X = transpose(A) K_W A.}
++An invertible transformation preserves the span of all intervening vector
++observations, so this leaves the estimator unchanged in exact arithmetic.
++Transforming already normalized correlations would not be equivalent.
 +
-
++No singular directions are silently discarded and no regularization is
++added. SVD singular values must exceed
++\eqn{\max(n,m)\epsilon d_{\max}}{max(n,m) * eps * largest_singular_value},
++where \eqn{\epsilon}{eps} is \code{.Machine$double.eps}. Residual systems that
++require a solve must be positive definite with estimated reciprocal condition
++number at least \eqn{\sqrt{\epsilon}}{sqrt(eps)} in whitened coordinates.
++Invalid joint residual covariances are rejected, including at the final lag;
++eigenvalues down to
++\eqn{-64(2m)\epsilon\max(1,\|H\|_1)}{-64 * (2*m) * eps * max(1, norm(H, "1"))}
++are treated as roundoff for the joint residual block \eqn{H}{H}.
++Exact positive-semidefinite boundaries are allowed. At lag one no SVD or
++regression solve is needed, so redundant columns with positive variances
++are permitted. A coefficient exceeding one in modulus by at most
++\eqn{64m\epsilon}{64 * m * eps} is clamped to the boundary; a larger
++violation raises an error. Short or highly predictable series can still
++produce singular or numerically unreliable higher orders.
++
++Dense arithmetic requires \eqn{O(nm^2+m^3p^2)}{O(n*m^2 + m^3*p^2)} operations
++and \eqn{O(nm+m^2p)}{O(n*m + m^2*p)} storage, where \eqn{p}{p} is the
++maximum lag. C and R can differ by roundoff and borderline failure decisions.
++
+ 
    The generic function \code{plot} has a method for objects of class
    \code{"acf"}.
-@@ -102,10 +167,16 @@ ccf(x, y, lag.max = NULL, type = c("correlation", "covariance"),
+@@ -102,10 +198,16 @@ ccf(x, y, lag.max = NULL, type = c("correlation", "covariance"),
    Original: Paul Gilbert, Martyn Plummer.
    Extensive modifications and univariate case of \code{pacf} by
    B. D. Ripley.
@@ -247,9 +354,9 @@ index 38c5e26..81a7e68 100644
 +Methods}, second edition. Pearson Prentice Hall. Section 16.5.3,
 +equations (16.5.39)--(16.5.44) and (16.5.50)--(16.5.51).
  }
-
+ 
  \seealso{
-@@ -129,5 +200,12 @@ ccf(mdeaths, fdeaths, ylab = "cross-correlation")
+@@ -129,5 +231,12 @@ ccf(mdeaths, fdeaths, ylab = "cross-correlation")
  presidents # contains missing values
  acf(presidents, na.action = na.pass)
  pacf(presidents, na.action = na.pass)
@@ -263,28 +370,28 @@ index 38c5e26..81a7e68 100644
  }
  \keyword{ts}
 diff --git a/src/library/stats/src/init.c b/src/library/stats/src/init.c
-index 1616c2b..4d185fe 100644
+index 1616c2b..3209b76 100644
 --- a/src/library/stats/src/init.c
 +++ b/src/library/stats/src/init.c
 @@ -135,6 +135,7 @@ static const R_CallMethodDef CallEntries[] = {
      CALLDEF(bw_phi6, 4),
      CALLDEF(acf, 3),
      CALLDEF(pacf1, 2),
-+    CALLDEF(pacf_wei_cov, 1),
++    CALLDEF(pacf_wei_cov, 2),
      CALLDEF(ar2ma, 2),
      CALLDEF(Burg, 2),
      CALLDEF(intgrt_vec, 3),
 diff --git a/src/library/stats/src/statsR.h b/src/library/stats/src/statsR.h
-index 78b379c..9870e8b 100644
+index 78b379c..8357a71 100644
 --- a/src/library/stats/src/statsR.h
 +++ b/src/library/stats/src/statsR.h
 @@ -210,3 +210,6 @@ SEXP dpermdist2(SEXP x, SEXP m);
-
+ 
  SEXP stats_signrank_free(SEXP);
  SEXP stats_wilcox_free(SEXP);
 +
 +/* Wei componentwise multivariate partial autocorrelations. */
-+SEXP pacf_wei_cov(SEXP covariance);
++SEXP pacf_wei_cov(SEXP covariance, SEXP map);
 diff --git a/src/library/stats/src/Makefile.in b/src/library/stats/src/Makefile.in
 index 93eb8cb..c02b4bd 100644
 --- a/src/library/stats/src/Makefile.in
@@ -313,12 +420,12 @@ index 50d8ec1..9994762 100644
    integrate.c random.c distn.c zeroin.c rcont.c influence.c permdist.c
 diff --git a/src/library/stats/src/pacf_wei.c b/src/library/stats/src/pacf_wei.c
 new file mode 100644
-index 0000000..cf80314
+index 0000000..b038b8b
 --- /dev/null
 +++ b/src/library/stats/src/pacf_wei.c
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,212 @@
 +/*
-+ * C port of Wei's partial lag correlation recursion, eqs. 16.5.43,50-51.
++ * C port of Wei's partial autocorrelation recursion, eqs. 16.5.43,50-51.
 + * Based on Simone Giannerini's 2007 R implementation; GPL version 2 or later.
 + *
 + * The author of the original software is Simone Giannerini, Copyright (c) 2007.
@@ -338,8 +445,10 @@ index 0000000..cf80314
 + * GNU General Public License for more details.
 + * https://www.R-project.org/Licenses/
 + *
-+ * Input: REAL array (p+1,m,m), from stats::acf(type="covariance").
-+ * Output: REAL array (p,m,m), using R's later-endpoint/earlier-endpoint axes.
++ * Input: REAL covariance array (p+1,m,m) and REAL matrix A, with X = W A.
++ * Covariances are estimated directly from whitened observations W. Each
++ * residual covariance is mapped back as A' M A before normalization.
++ * Output: REAL array (p,m,m), using R's component-at-t+s/component-at-t axes.
 + * Covariance estimation, marginal rescaling, labels and plotting stay in R.
 + * All dense products and solves use R's BLAS/LAPACK. No external dependencies.
 + */
@@ -351,250 +460,338 @@ index 0000000..cf80314
 +#include <R_ext/Lapack.h>
 +#include <R_ext/Utils.h>
 +#include <float.h>
++#include <limits.h>
 +#include <math.h>
 +#include <stdint.h>
 +#include <string.h>
 +
-+static R_xlen_t checked_product(R_xlen_t a, R_xlen_t b)
++static R_xlen_t product(R_xlen_t a, R_xlen_t b)
 +{
-+    if (a < 0 || b < 0 || (b && a > R_XLEN_T_MAX / b))
++    if (a < 0 || b < 0 || (b && a > R_XLEN_T_MAX/b))
 +        Rf_error("covariance dimensions are too large");
-+    R_xlen_t n = a * b;
-+    if ((uintmax_t) n > SIZE_MAX / sizeof(double))
++    R_xlen_t n=a*b;
++    if ((uintmax_t)n > SIZE_MAX/sizeof(double))
 +        Rf_error("workspace size exceeds addressable memory");
 +    return n;
 +}
-+
-+static double *workspace(R_xlen_t n)
++static double *workspace(R_xlen_t n) { return (double *)R_alloc((size_t)n,sizeof(double)); }
++static double norm1(const double *a, int m)
 +{
-+    return (double *) R_alloc((size_t) n, sizeof(double));
-+}
-+
-+/* Z <- Z - A B.  Matrices are contiguous column-major m by m blocks. */
-+static void subtract_product(double *z, const double *a, const double *b, int m)
-+{
-+    const double minus = -1.0, one = 1.0;
-+    F77_CALL(dgemm)("N", "N", &m, &m, &m, &minus,
-+                   a, &m, b, &m, &one, z, &m FCONE FCONE);
-+}
-+
-+/* out = B A^{-1}, by solving A' out' = B'. No explicit inverse is formed.
-+ * DGECON uses the LU factors to reject numerically singular systems, matching
-+ * R's solve.default tolerance of .Machine$double.eps in the reference code.
-+ */
-+static void right_solve(const double *b, const double *a, double *out,
-+                        int m, int lag, const char *side, double *lu,
-+                        double *rhs, int *pivot, double *work, int *iwork)
-+{
-+    double anorm = 0.0, rcond = 0.0;
-+    int info;
-+    for (int j = 0; j < m; ++j) {
-+        double sum = 0.0;
-+        for (int i = 0; i < m; ++i) {
-+            size_t ij = (size_t) i + (size_t) j * m;
-+            size_t ji = (size_t) j + (size_t) i * m;
-+            lu[ij] = a[ji];
-+            rhs[ij] = b[ji];
-+            sum += fabs(lu[ij]);
-+        }
-+        if (sum > anorm) anorm = sum;
++    double largest=0;
++    for (int j=0;j<m;++j) {
++        double sum=0;
++        for(int i=0;i<m;++i) sum+=fabs(a[(size_t)i+(size_t)j*m]);
++        if(sum>largest) largest=sum;
 +    }
-+    F77_CALL(dgesv)(&m, &m, lu, &m, pivot, rhs, &m, &info);
-+    if (info > 0)
-+        Rf_error("singular %s residual covariance at lag %d (pivot %d)",
-+                 side, lag, info);
-+    if (info < 0)
-+        Rf_error("DGESV rejected argument %d at lag %d", -info, lag);
-+    F77_CALL(dgecon)("1", &m, lu, &m, &anorm, &rcond, work, iwork,
-+                    &info FCONE);
-+    if (info != 0)
-+        Rf_error("DGECON failed at lag %d (INFO=%d)", lag, info);
-+    if (!R_FINITE(rcond) || rcond < DBL_EPSILON)
-+        Rf_error("numerically singular %s residual covariance at lag %d (rcond=%g)",
-+                 side, lag, rcond);
-+    for (int j = 0; j < m; ++j)
-+        for (int i = 0; i < m; ++i)
-+            out[(size_t) i + (size_t) j*m] = rhs[(size_t) j + (size_t) i*m];
++    return largest;
 +}
-+
-+SEXP pacf_wei_cov(SEXP covariance)
++static void symmetrize(double *a,int m)
 +{
-+    SEXP dim = Rf_getAttrib(covariance, R_DimSymbol);
-+    if (TYPEOF(covariance) != REALSXP || TYPEOF(dim) != INTSXP || XLENGTH(dim) != 3)
++    for(int j=0;j<m;++j) for(int i=0;i<j;++i) {
++        size_t ij=(size_t)i+(size_t)j*m,ji=(size_t)j+(size_t)i*m;
++        double v=0.5*a[ij]+0.5*a[ji]; a[ij]=a[ji]=v;
++    }
++}
++/* Z <- Z - A B. */
++static void subtract_product(double *z,const double *a,const double *b,int m)
++{
++    const double minus=-1,one=1;
++    F77_CALL(dgemm)("N","N",&m,&m,&m,&minus,a,&m,b,&m,&one,z,&m FCONE FCONE);
++}
++/* Original observations X = W A; residual covariances transform as A' M A. */
++static void map_cov(const double *x,const double *a,double *out,double *tmp,int m)
++{
++    const double one=1,zero=0;
++    F77_CALL(dgemm)("N","N",&m,&m,&m,&one,x,&m,a,&m,&zero,tmp,&m FCONE FCONE);
++    F77_CALL(dgemm)("T","N",&m,&m,&m,&one,a,&m,tmp,&m,&zero,out,&m FCONE FCONE);
++}
++/* PSD is sufficient at exact boundaries, including the final requested lag. */
++static void check_joint(const double *u,const double *v,const double *k,int m,int lag,
++                        double *joint,double *eig,double *work,int lwork)
++{
++    int d=2*m,info;
++    for(int j=0;j<m;++j) for(int i=0;i<m;++i) {
++        size_t ij=(size_t)i+(size_t)j*m;
++        joint[(size_t)i+(size_t)j*d]=u[ij];
++        joint[(size_t)(i+m)+(size_t)(j+m)*d]=v[ij];
++        joint[(size_t)i+(size_t)(j+m)*d]=k[ij];
++        joint[(size_t)(j+m)+(size_t)i*d]=k[ij];
++    }
++    for(R_xlen_t i=0;i<product(d,d);++i)
++        if(!R_FINITE(joint[i])) Rf_error("nonfinite residual covariance at lag %d",lag);
++    double norm=norm1(joint,d);
++    if(!R_FINITE(norm)) Rf_error("nonfinite residual covariance norm at lag %d",lag);
++    double tol=64.0*d*DBL_EPSILON*fmax(1.0,norm);
++    F77_CALL(dsyev)("N","U",&d,joint,&d,eig,work,&lwork,&info FCONE FCONE);
++    if(info) Rf_error("residual covariance eigenvalue calculation failed at lag %d",lag);
++    if(!R_FINITE(eig[0]) || eig[0]<-tol)
++        Rf_error("invalid joint residual covariance at lag %d",lag);
++}
++/* Out = B A^-1, by Cholesky solves of A Out' = B'. No explicit inverse. */
++static void right_solve(const double *b,const double *a,double *out,int m,int lag,
++                        const char *side,double *factor,double *rhs,double *work,int *iwork)
++{
++    int info; double norm=norm1(a,m),rcond;
++    memcpy(factor,a,(size_t)m*m*sizeof(double));
++    F77_CALL(dpotrf)("U",&m,factor,&m,&info FCONE);
++    if(info>0) Rf_error("nonpositive-definite %s residual covariance at lag %d",side,lag);
++    if(info<0) Rf_error("DPOTRF rejected argument %d",-info);
++    F77_CALL(dpocon)("U",&m,factor,&m,&norm,&rcond,work,iwork,&info FCONE);
++    if(info) Rf_error("DPOCON failed at lag %d",lag);
++    if(!R_FINITE(rcond) || rcond<sqrt(DBL_EPSILON))
++        Rf_error("numerically singular %s residual covariance at lag %d",side,lag);
++    for(int j=0;j<m;++j) for(int i=0;i<m;++i)
++        rhs[(size_t)i+(size_t)j*m]=b[(size_t)j+(size_t)i*m];
++    F77_CALL(dpotrs)("U",&m,&m,factor,&m,rhs,&m,&info FCONE);
++    if(info) Rf_error("DPOTRS failed at lag %d",lag);
++    for(int j=0;j<m;++j) for(int i=0;i<m;++i)
++        out[(size_t)i+(size_t)j*m]=rhs[(size_t)j+(size_t)i*m];
++}
++SEXP pacf_wei_cov(SEXP covariance,SEXP map)
++{
++    SEXP dim=Rf_getAttrib(covariance,R_DimSymbol);
++    if(TYPEOF(covariance)!=REALSXP || TYPEOF(dim)!=INTSXP || XLENGTH(dim)!=3)
 +        Rf_error("'covariance' must be a double array with dimensions (p+1,m,m)");
-+    int nlags = INTEGER(dim)[0], m = INTEGER(dim)[1];
-+    if (nlags < 2 || m < 1 || INTEGER(dim)[2] != m)
-+        Rf_error("'covariance' must have dimensions (p+1,m,m), p>=1, m>=1");
-+    int p = nlags - 1;
-+    R_xlen_t mm = checked_product(m, m);
-+    R_xlen_t total = checked_product(mm, nlags);
-+    R_xlen_t nout = checked_product(mm, p);
-+    if (XLENGTH(covariance) != total)
-+        Rf_error("covariance length does not match its dimensions");
-+    const double *input = REAL(covariance);
-+    for (R_xlen_t i = 0; i < total; ++i) {
-+        if (!R_FINITE(input[i])) Rf_error("nonfinite covariance value");
-+        if ((i & 65535) == 0) R_CheckUserInterrupt();
++    int nlags=INTEGER(dim)[0],m=INTEGER(dim)[1];
++    if(nlags<2 || m<1 || INTEGER(dim)[2]!=m || m>(INT_MAX-1)/6)
++        Rf_error("invalid covariance dimensions");
++    int p=nlags-1,d=2*m,lwork=3*d;
++    R_xlen_t mm=product(m,m),total=product(mm,nlags),nout=product(mm,p);
++    if(XLENGTH(covariance)!=total) Rf_error("covariance length does not match dimensions");
++    SEXP md=Rf_getAttrib(map,R_DimSymbol);
++    if(TYPEOF(map)!=REALSXP || TYPEOF(md)!=INTSXP || XLENGTH(md)!=2 ||
++       INTEGER(md)[0]!=m || INTEGER(md)[1]!=m || XLENGTH(map)!=mm)
++        Rf_error("'map' must be a finite double m by m matrix");
++    const double *input=REAL(covariance),*a=REAL(map);
++    for(R_xlen_t i=0;i<total;++i) {
++        if(!R_FINITE(input[i])) Rf_error("nonfinite covariance value");
++        if((i&65535)==0) R_CheckUserInterrupt();
 +    }
-+    /* Pack strided R lag slices into contiguous BLAS matrices. */
-+    double *g = workspace(total);
-+    for (int s = 0; s < nlags; ++s)
-+        for (R_xlen_t ij = 0; ij < mm; ++ij)
-+            g[(R_xlen_t)s*mm + ij] = input[s + (R_xlen_t)nlags*ij];
-+
-+    SEXP outdim = PROTECT(Rf_allocVector(INTSXP, 3));
-+    INTEGER(outdim)[0] = p;
-+    INTEGER(outdim)[1] = INTEGER(outdim)[2] = m;
-+    SEXP answer = PROTECT(Rf_allocArray(REALSXP, outdim));
-+    double *output = REAL(answer);
-+    (void) nout; /* checked before allocation */
-+    double *vf = workspace(mm), *vb = workspace(mm), *cross = workspace(mm);
-+    memcpy(vf, g, (size_t)mm * sizeof(double));
-+    memcpy(vb, g, (size_t)mm * sizeof(double));
-+
-+    /* At lag one no regression is needed, even if lag-zero covariance is
-+     * singular. All solver/history workspace can therefore be skipped. */
-+    R_xlen_t nhistory = p > 1 ? checked_product(mm, p-1) : 0;
-+    double *f = NULL, *b = NULL, *fnext = NULL, *bnext = NULL;
-+    double *fs = NULL, *bs = NULL, *lu = NULL, *rhs = NULL, *condwork = NULL;
-+    int *pivot = NULL, *iwork = NULL;
-+    if (p > 1) {
-+        f = workspace(nhistory); b = workspace(nhistory);
-+        fnext = workspace(nhistory); bnext = workspace(nhistory);
-+        fs = workspace(mm); bs = workspace(mm);
-+        lu = workspace(mm); rhs = workspace(mm);
-+        condwork = workspace(checked_product(4, m));
-+        pivot = (int *) R_alloc((size_t)m, sizeof(int));
-+        iwork = (int *) R_alloc((size_t)m, sizeof(int));
++    for(R_xlen_t i=0;i<mm;++i) if(!R_FINITE(a[i])) Rf_error("'map' must contain finite values");
++    double *g=workspace(total);
++    for(int s=0;s<nlags;++s) for(R_xlen_t ij=0;ij<mm;++ij)
++        g[(R_xlen_t)s*mm+ij]=input[s+(R_xlen_t)nlags*ij];
++    double tol=64.0*m*DBL_EPSILON*fmax(1.0,norm1(g,m));
++    for(int j=0;j<m;++j) for(int i=0;i<j;++i)
++        if(fabs(g[(size_t)i+(size_t)j*m]-g[(size_t)j+(size_t)i*m])>tol)
++            Rf_error("lag-zero covariance must be symmetric");
++    symmetrize(g,m);
++    SEXP outdim=PROTECT(Rf_allocVector(INTSXP,3));
++    INTEGER(outdim)[0]=p;INTEGER(outdim)[1]=INTEGER(outdim)[2]=m;
++    SEXP answer=PROTECT(Rf_allocArray(REALSXP,outdim));
++    double *output=REAL(answer); (void)nout;
++    double *vf=workspace(mm),*vb=workspace(mm),*cross=workspace(mm);
++    memcpy(vf,g,(size_t)mm*sizeof(double));memcpy(vb,g,(size_t)mm*sizeof(double));
++    double *mu=workspace(mm),*mv=workspace(mm),*mk=workspace(mm),*tmp=workspace(mm);
++    double *joint=workspace(product(d,d)),*eig=workspace(d),*eigwork=workspace(lwork);
++    R_xlen_t history=p>1?product(mm,p-1):0;
++    double *f=NULL,*b=NULL,*fn=NULL,*bn=NULL,*fs=NULL,*bs=NULL;
++    double *factor=NULL,*rhs=NULL,*condwork=NULL;int *iwork=NULL;
++    if(p>1) {
++        f=workspace(history);b=workspace(history);fn=workspace(history);bn=workspace(history);
++        fs=workspace(mm);bs=workspace(mm);factor=workspace(mm);rhs=workspace(mm);
++        condwork=workspace(product(3,m));iwork=(int *)R_alloc((size_t)m,sizeof(int));
 +    }
-+    for (int s = 1; s <= p; ++s) {
++    double bound=64.0*m*DBL_EPSILON;
++    for(int s=1;s<=p;++s) {
 +        R_CheckUserInterrupt();
-+        memcpy(cross, g + (R_xlen_t)s*mm, (size_t)mm * sizeof(double));
-+        for (int k = 1; k < s; ++k) {
-+            if ((k & 63) == 0) R_CheckUserInterrupt();
-+            subtract_product(cross, f + (R_xlen_t)(k-1)*mm,
-+                             g + (R_xlen_t)(s-k)*mm, m);
++        memcpy(cross,g+(R_xlen_t)s*mm,(size_t)mm*sizeof(double));
++        for(int k=1;k<s;++k) {
++            if((k&63)==0) R_CheckUserInterrupt();
++            subtract_product(cross,f+(R_xlen_t)(k-1)*mm,g+(R_xlen_t)(s-k)*mm,m);
 +        }
-+        for (int j = 0; j < m; ++j) {
-+            double db = vb[(size_t)j*(m+1)];
-+            if (!R_FINITE(db) || db <= 0.0)
-+                Rf_error("nonpositive backward residual variance at lag %d", s);
-+            for (int i = 0; i < m; ++i) {
-+                double df = vf[(size_t)i*(m+1)];
-+                if (!R_FINITE(df) || df <= 0.0)
-+                    Rf_error("nonpositive forward residual variance at lag %d", s);
-+                size_t ij = (size_t)i + (size_t)j*m;
-+                double value = cross[ij] / sqrt(df) / sqrt(db);
-+                if (!R_FINITE(value)) Rf_error("nonfinite partial correlation at lag %d", s);
-+                output[(s-1) + (R_xlen_t)p*ij] = value;
++        check_joint(vf,vb,cross,m,s,joint,eig,eigwork,lwork);
++        map_cov(vf,a,mu,tmp,m);map_cov(vb,a,mv,tmp,m);map_cov(cross,a,mk,tmp,m);
++        for(int j=0;j<m;++j) {
++            double db=mv[(size_t)j*(m+1)];
++            if(!R_FINITE(db)||db<=0) Rf_error("nonpositive backward residual variance at lag %d",s);
++            for(int i=0;i<m;++i) {
++                double df=mu[(size_t)i*(m+1)];
++                if(!R_FINITE(df)||df<=0) Rf_error("nonpositive forward residual variance at lag %d",s);
++                size_t ij=(size_t)i+(size_t)j*m;
++                double value=mk[ij]/sqrt(df)/sqrt(db);
++                if(!R_FINITE(value)) Rf_error("nonfinite partial correlation at lag %d",s);
++                if(fabs(value)>1.0+bound) Rf_error("partial correlation exceeds numerical bounds at lag %d",s);
++                output[s-1+(R_xlen_t)p*ij]=fmax(-1.0,fmin(1.0,value));
 +            }
 +        }
-+        if (s == p) break;
-+        right_solve(cross, vb, fs, m, s, "backward", lu, rhs, pivot, condwork, iwork);
-+        /* Second RHS is cross': reuse rhs as a temporary transposed block.
-+         * right_solve writes rhs, so bs initially holds the transposed input. */
-+        for (int j = 0; j < m; ++j)
-+            for (int i = 0; i < m; ++i)
-+                bs[(size_t)i+(size_t)j*m] = cross[(size_t)j+(size_t)i*m];
-+        right_solve(bs, vf, bs, m, s, "forward", lu, rhs, pivot, condwork, iwork);
-+        for (int k = 1; k < s; ++k) {
-+            if ((k & 63) == 0) R_CheckUserInterrupt();
-+            R_xlen_t offset = (R_xlen_t)(k-1)*mm;
-+            memcpy(fnext+offset, f+offset, (size_t)mm*sizeof(double));
-+            memcpy(bnext+offset, b+offset, (size_t)mm*sizeof(double));
-+            subtract_product(fnext+offset, fs, b+(R_xlen_t)(s-k-1)*mm, m);
-+            subtract_product(bnext+offset, bs, f+(R_xlen_t)(s-k-1)*mm, m);
++        if(s==p) break;
++        right_solve(cross,vb,fs,m,s,"backward",factor,rhs,condwork,iwork);
++        for(int j=0;j<m;++j) for(int i=0;i<m;++i)
++            bs[(size_t)i+(size_t)j*m]=cross[(size_t)j+(size_t)i*m];
++        right_solve(bs,vf,bs,m,s,"forward",factor,rhs,condwork,iwork);
++        for(int k=1;k<s;++k) {
++            if((k&63)==0) R_CheckUserInterrupt();
++            R_xlen_t off=(R_xlen_t)(k-1)*mm;
++            memcpy(fn+off,f+off,(size_t)mm*sizeof(double));memcpy(bn+off,b+off,(size_t)mm*sizeof(double));
++            subtract_product(fn+off,fs,b+(R_xlen_t)(s-k-1)*mm,m);
++            subtract_product(bn+off,bs,f+(R_xlen_t)(s-k-1)*mm,m);
 +        }
-+        memcpy(fnext+(R_xlen_t)(s-1)*mm, fs, (size_t)mm*sizeof(double));
-+        memcpy(bnext+(R_xlen_t)(s-1)*mm, bs, (size_t)mm*sizeof(double));
-+        double *swap = f; f = fnext; fnext = swap;
-+        swap = b; b = bnext; bnext = swap;
-+        const double minus = -1.0, one = 1.0;
-+        F77_CALL(dgemm)("N", "T", &m, &m, &m, &minus, fs, &m,
-+                       cross, &m, &one, vf, &m FCONE FCONE);
-+        subtract_product(vb, bs, cross, m);
-+        /* Symmetrize only roundoff: no clipping or regularization. */
-+        for (int j = 0; j < m; ++j)
-+            for (int i = 0; i < j; ++i) {
-+                size_t ij = (size_t)i+(size_t)j*m, ji = (size_t)j+(size_t)i*m;
-+                double v = 0.5*vf[ij]+0.5*vf[ji]; vf[ij]=vf[ji]=v;
-+                v = 0.5*vb[ij]+0.5*vb[ji]; vb[ij]=vb[ji]=v;
-+            }
++        memcpy(fn+(R_xlen_t)(s-1)*mm,fs,(size_t)mm*sizeof(double));
++        memcpy(bn+(R_xlen_t)(s-1)*mm,bs,(size_t)mm*sizeof(double));
++        double *swap=f;f=fn;fn=swap;swap=b;b=bn;bn=swap;
++        const double minus=-1,one=1;
++        F77_CALL(dgemm)("N","T",&m,&m,&m,&minus,fs,&m,cross,&m,&one,vf,&m FCONE FCONE);
++        subtract_product(vb,bs,cross,m);symmetrize(vf,m);symmetrize(vb,m);
 +    }
-+    UNPROTECT(2);
-+    return answer;
++    UNPROTECT(2);return answer;
 +}
 diff --git a/src/library/stats/tests/pacf-wei.R b/src/library/stats/tests/pacf-wei.R
 new file mode 100644
-index 0000000..6d482f1
+index 0000000..36ceb17
 --- /dev/null
 +++ b/src/library/stats/tests/pacf-wei.R
-@@ -0,0 +1,65 @@
-+# Wei multivariate partial autocorrelations: C/R and independent projection.
-+set.seed(10)
-+x <- cbind(x = rnorm(1000, sd = 10000), y = rnorm(1000))
-+a <- pacf(x, 10, plot = FALSE)
-+b <- pacf(x, 10, plot = FALSE, method = "R")
-+near <- function(a, b, tolerance = 2e-12) {
-+    stopifnot(identical(dim(a), dim(b)), max(abs(as.numeric(a) - as.numeric(b))) <= tolerance)
+@@ -0,0 +1,150 @@
++# Stabilized multivariate PACF: independent raw-data QR oracle.
++data("pinkham", package = "datasets")
++changes <- diff(ts(pinkham, start=1907, frequency=1))
++stopifnot(isTRUE(all.equal(pacf(changes,6,plot=FALSE)$acf,
++   pacf(changes,6,plot=FALSE,method="R")$acf,tolerance=1e-12)))
++nchecks <- 0L
++check <- function(ok, label) {
++    if (!isTRUE(ok)) stop("FAILED: ", label, call. = FALSE)
++    nchecks <<- nchecks + 1L
 +}
-+throws <- function(expr) stopifnot(inherits(tryCatch({force(expr); NULL}, error = identity), "error"))
-+near(a$acf, b$acf)
-+stopifnot(max(abs(a$acf)) <= 1)
-+near(a$acf[1, , ], acf(x, 1, plot = FALSE)$acf[2, , ])
++near <- function(a, b, label, tolerance = 2e-12) {
++    err <- if (length(a) == length(b)) max(abs(as.numeric(a) - as.numeric(b))) else Inf
++    check(identical(dim(a), dim(b)) && is.finite(err) && err <= tolerance,
++          sprintf("%s (max error %.3g)", label, err))
++    invisible(err)
++}
++throws <- function(expr, label, pattern = NULL) {
++    value <- tryCatch({force(expr); NULL}, error = identity)
++    check(inherits(value, "error") &&
++          (is.null(pattern) || grepl(pattern, conditionMessage(value))), label)
++}
 +
-+# Project both observations on every intervening vector using a Schur complement.
-+schur <- function(x, p) {
-+    m <- ncol(x)
-+    cc <- acf(x, lag.max = p, type = "covariance", plot = FALSE)$acf
-+    block <- function(i, j) {
-+        g <- matrix(cc[abs(i-j)+1L, , ], m, m)
-+        if (i < j) t(g) else g
-+    }
++# The Gram matrix of these zero-padded shifts is n times the biased sample
++# block-Toeplitz covariance. Householder QR projects the two observations on
++# every intervening vector without constructing or inverting that covariance.
++# This oracle does not whiten or use the forward/backward recursion.
++qr_reference <- function(x, p) {
++    x <- as.matrix(x)
++    x <- sweep(x, 2L, colMeans(x), "-")
++    n <- nrow(x); m <- ncol(x)
 +    out <- array(0, c(p, m, m))
 +    for (s in seq_len(p)) {
-+        H <- do.call(rbind, lapply(0:s, function(i)
-+            do.call(cbind, lapply(0:s, function(j) block(i, j)))))
-+        end <- c(seq_len(m), s*m + seq_len(m))
-+        S <- H[end, end, drop = FALSE]
++        padded <- matrix(0, n + s, (s + 1L) * m)
++        for (k in 0:s)
++            padded[k + seq_len(n), k * m + seq_len(m)] <- x
++        later <- padded[, seq_len(m), drop = FALSE]
++        earlier <- padded[, s * m + seq_len(m), drop = FALSE]
 +        if (s > 1L) {
-+            middle <- seq.int(m+1L, s*m)
-+            S <- S - H[end, middle, drop = FALSE] %*%
-+                solve(H[middle, middle, drop = FALSE], H[middle, end, drop = FALSE])
++            middle <- padded[, seq.int(m + 1L, s * m), drop = FALSE]
++            Q <- qr.Q(qr(middle, LAPACK = TRUE))
++            later <- later - Q %*% crossprod(Q, later)
++            earlier <- earlier - Q %*% crossprod(Q, earlier)
 +        }
-+        early <- seq_len(m); late <- m + early
-+        out[s, , ] <- S[late, early, drop = FALSE] /
-+            outer(sqrt(diag(S)[late]), sqrt(diag(S)[early]))
++        out[s, , ] <- crossprod(later, earlier) /
++            outer(sqrt(colSums(later * later)), sqrt(colSums(earlier * earlier)))
 +    }
 +    out
 +}
-+near(a$acf, schur(x, 10))
-+data("pinkham", package = "datasets")
-+stopifnot(is.data.frame(pinkham), identical(dim(pinkham), c(54L, 2L)),
-+          identical(names(pinkham), c("advertising", "sales")))
-+changes <- diff(ts(pinkham, start = 1907, frequency = 1))
-+expected <- schur(changes, 6)
-+for (method in c("C", "R")) {
-+    near(pacf(changes, 6, plot = FALSE, method = method)$acf, expected)
-+    scaled <- sweep(x, 2, c(1e-120, 1e120), "*")
-+    near(pacf(scaled, 10, plot = FALSE, method = method)$acf, a$acf)
-+    near(pacf(x[nrow(x):1L, ], 10, plot = FALSE, method = method)$acf,
-+         aperm(a$acf, c(1L, 3L, 2L)))
-+    near(pacf(x[, 1], 10, plot = FALSE, method = method)$acf,
-+         array(.Call(stats:::C_pacf1, drop(acf(x[, 1], 10, plot = FALSE)$acf), 10L),
-+               c(10L, 1L, 1L)))
-+    duplicate <- cbind(x[, 1], x[, 1])
-+    stopifnot(all(is.finite(pacf(duplicate, 1, plot = FALSE, method = method)$acf)))
-+    throws(pacf(duplicate, 2, plot = FALSE, method = method))
-+    throws(pacf(matrix(1:3, 1, 3), plot = FALSE, method = method))
-+    throws(pacf(x + 1i, plot = FALSE, method = method))
-+    for (lag in list(NA_real_, Inf, 0, c(1, 2)))
-+        throws(pacf(x, lag, plot = FALSE, method = method))
-+    stopifnot(identical(dim(pacf(x, 3.9, plot = FALSE, method = method)$acf), c(3L, 2L, 2L)))
++
++worst.oracle <- worst.backend <- 0
++# Includes the reported cases and all five Cholesky-only survivors identified
++# during exploratory testing. A bound check alone would miss their old errors.
++seeds <- unique(c(4L, 83L, 14L, 134L, 237L, 387L, 954L, seq_len(20L)))
++for (seed in seeds) {
++    set.seed(seed)
++    v <- rnorm(50)
++    x <- cbind(v, v + 1e-6 * rnorm(50))
++    expected <- qr_reference(x, 10L)
++    cval <- pacf(x, 10L, plot = FALSE, method = "C")$acf
++    rval <- pacf(x, 10L, plot = FALSE, method = "R")$acf
++    worst.oracle <- max(worst.oracle,
++        near(cval, expected, paste("nearly collinear C vs QR, seed", seed), 1e-8),
++        near(rval, expected, paste("nearly collinear R vs QR, seed", seed), 1e-8))
++    worst.backend <- max(worst.backend,
++        near(cval, rval, paste("nearly collinear C/R agreement, seed", seed)))
++    check(max(abs(cval)) <= 1 && max(abs(rval)) <= 1,
++          paste("nearly collinear coefficients are bounded, seed", seed))
 +}
-+throws(pacf(x, method = "invalid"))
-+cat("PASS: C/R agreement, bounds, independent Schur projection, Pinkham, scaling,\n",
-+    "time reversal, univariate path, lag handling and invalid/singular inputs.\n", sep = "")
++
++z <- cbind(z1 = c(-4, -2, -1, 0, 1, 2, 4, -3, 3, 0),
++           z2 = c(1, -1, 2, -2, 3, -3, 4, -4, 5, -5))
++offset <- cbind(z1 = 5.7e15 + z[, 1L], z2 = z[, 2L])
++stopifnot(identical(sweep(offset, 2L, colMeans(offset), "-"), z))
++set.seed(9)
++u <- rnorm(50); u <- u - mean(u)
++perfect <- cbind(c(u, 0), c(0, u))
++smallest <- .Machine$double.xmin * .Machine$double.eps
++subnormal <- cbind(1:10, -(1:10)) * smallest
++huge <- cbind(c(.Machine$double.xmax, rep(-.Machine$double.xmax, 9L)), z[, 2L])
++huge.scaled <- huge
++huge.scaled[, 1L] <- huge.scaled[, 1L] / 2^(.Machine$double.max.exp - 1L)
++set.seed(209)
++regular <- matrix(rnorm(80), 40L, 2L)
++wide <- matrix(rnorm(80), 10L, 8L)
++for (method in c("C", "R")) {
++    calc <- function(x, lag.max = NULL, ...) pacf(x, lag.max,
++        plot = FALSE, method = method, ...)$acf
++    near(calc(offset, 1L)[1L, , ], stats::acf(offset, 1L, plot = FALSE)$acf[2L, , ],
++         paste(method, "large-offset lag one matches ordinary ACF"), 1e-14)
++    near(calc(offset, 1L), calc(z, 1L), paste(method, "exact-offset invariance"), 1e-14)
++    check(max(abs(calc(perfect, 1L))) <= 1, paste(method, "perfect lag-one bound"))
++    near(calc(subnormal, 1L), calc(cbind(1:10, -(1:10)), 1L),
++         paste(method, "subnormal scaling invariance"), 1e-14)
++    near(calc(huge, 1L), calc(huge.scaled, 1L),
++         paste(method, "finite extreme input avoids centering overflow"), 1e-14)
++    check(all(is.finite(calc(huge, 1L))), paste(method, "finite huge-scale result"))
++    check(identical(dim(calc(wide)), c(1L, 8L, 8L)),
++          paste(method, "short-wide default is lag one"))
++    for (input in list(regular, regular[, 1L], regular[, 1L, drop = FALSE])) {
++        near(calc(input, Inf), calc(input, nrow(regular) - 1L),
++             paste(method, "Inf caps identically in uni/multivariate input"))
++        near(calc(input, 3.9), calc(input, 3L), paste(method, "fractional lag is floored"))
++        for (bad in list(NA_real_, NaN, -Inf, 0, -1, "5", c(2, 5), TRUE, numeric()))
++            throws(calc(input, bad), paste(method, "malformed lag rejected consistently"), "lag.max")
++    }
++    throws(pacf("a", plot = FALSE, method = method),
++           paste(method, "numeric-type validation precedes length check"), "numeric")
++    throws(pacf(matrix(1:3, 1L, 3L), plot = FALSE, method = method),
++           paste(method, "one-observation matrix rejected before drop"), "observations")
++}
++for (plot in c(FALSE, TRUE)) {
++    throws(pacf(regular, 2L, plot = plot, meth = "invalid"),
++           "abbreviated method rejected even when plotting is disabled", "method")
++    throws(pacf(regular, 2L, plot = plot, meth = stop("must not evaluate")),
++           "method-prefix validation inspects unevaluated dots", "method")
++}
++
++native.symbol <- get("C_pacf_wei_cov", asNamespace("stats"))
++native <- function(cov, map = diag(dim(cov)[2L])) .Call(native.symbol, cov, map)
++joint <- array(0, c(2L, 2L, 2L))
++joint[1L, , ] <- diag(2L)
++# U and V are individually SPD and every entry of K is below one, yet the
++# full joint residual covariance is indefinite (largest singular value 1.5).
++joint[2L, , ] <- matrix(0.75, 2L, 2L)
++throws(native(joint), "invalid final-lag joint covariance fails")
++joint[2L, , ] <- diag(2L)
++near(native(joint)[1L, , ], diag(2L), "semidefinite exact-boundary joint block accepted")
++duplicate <- array(0, c(2L, 2L, 2L))
++duplicate[1L, , ] <- matrix(1, 2L, 2L)
++duplicate[2L, , ] <- matrix(0.2, 2L, 2L)
++check(all(is.finite(native(duplicate))), "singular marginal covariance permitted at lag one")
++boundary <- array(0, c(3L, 2L, 2L))
++boundary[1L, , ] <- diag(2L)
++boundary[2L, , ] <- matrix(c(0, 0, 1, 0), 2L, 2L)
++rotation <- matrix(c(1, -1, 1, 1), 2L, 2L) / sqrt(2)
++# At the final lag, each whitened marginal residual matrix is singular,
++# while the original components retain positive variances after mapping.
++near(native(boundary, rotation)[2L, , ], matrix(0, 2L, 2L),
++     "semidefinite final marginal covariances accepted when correlations exist")
++near(getFromNamespace(".pacf_wei_R", "stats")(boundary, rotation),
++     native(boundary, rotation), "R/C agree at a singular final residual boundary")
++throws(native(joint, matrix(1, 2L, 3L)), "native rejects wrong map dimensions")
++throws(native(joint, matrix(1L, 2L, 2L)), "native rejects integer map")
++bad.map <- diag(2L); bad.map[1L] <- NA_real_
++throws(native(joint, bad.map), "native rejects nonfinite map")
++throws(native(joint, numeric(4L)), "native rejects undimensioned map")
++
++cat(sprintf("All %d reviewer regression checks passed.\n", nchecks))
++cat(sprintf("Nearly collinear grid: %d seeds; max QR error %.3g; max C/R difference %.3g.\n",
++            length(seeds), worst.oracle, worst.backend))
 diff --git a/src/library/datasets/data/pinkham.R b/src/library/datasets/data/pinkham.R
 new file mode 100644
 index 0000000..b6663f0
@@ -688,3 +885,90 @@ index 0000000..4a6e05b
 +\code{\link[stats]{pacf}}, \code{\link[stats]{diff.ts}}
 +}
 +\keyword{datasets}
+diff --git a/tests/Examples/stats-Ex.Rout.save b/tests/Examples/stats-Ex.Rout.save
+index d6b9893..f18b9cd 100644
+--- a/tests/Examples/stats-Ex.Rout.save
++++ b/tests/Examples/stats-Ex.Rout.save
+@@ -2103,6 +2103,13 @@ U
+ > acf(presidents, na.action = na.pass)
+ > pacf(presidents, na.action = na.pass)
+ > 
++> ## Multivariate partial autocorrelations (Wei)
++> changes <- diff(ts(pinkham, start = 1907, frequency = 1))
++> pc <- pacf(changes, lag.max = 6, plot = FALSE)
++> pr <- pacf(changes, lag.max = 6, plot = FALSE, method = "R")
++> stopifnot(isTRUE(all.equal(pc$acf, pr$acf, tolerance = 1e-10)))
++> plot(pc)
++>
+ > 
+ > 
+ > cleanEx()
+diff --git a/tests/Examples/datasets-Ex.Rout.save b/tests/Examples/datasets-Ex.Rout.save
+index d6c75c6..4c3c646 100644
+--- a/tests/Examples/datasets-Ex.Rout.save
++++ b/tests/Examples/datasets-Ex.Rout.save
+@@ -3150,6 +3150,48 @@ nms      body_mass   sex  year
+ > 
+ > 
+ > cleanEx()
++> nameEx("pinkham")
++> ### * pinkham
++>
++> flush(stderr()); flush(stdout())
++>
++> ### Name: pinkham
++> ### Title: Lydia Pinkham advertising and sales
++> ### Aliases: pinkham
++> ### Keywords: datasets
++>
++> ### ** Examples
++>
++> data("pinkham", package = "datasets")
++> head(pinkham)
++  advertising sales
++1         608  1016
++2         451   921
++3         529   934
++4         543   976
++5         525   930
++6         549  1052
++> levels <- ts(pinkham, start = 1907, frequency = 1)
++> changes <- diff(levels)
++> result <- pacf(changes, lag.max = 6, plot = FALSE)
++> round(result$acf[1:2, , ], 3)
++, , advertising
++
++  advertising  sales
++1       0.051  0.222
++2      -0.530 -0.276
++
++, , sales
++
++  advertising  sales
++1       0.312  0.427
++2      -0.324 -0.102
++
++> plot(result)
++>
++>
++>
++> cleanEx()
+ > nameEx("precip")
+ > ### * precip
+ > 
+diff --git a/tests/datasets.Rout.save b/tests/datasets.Rout.save
+index 4c8cf8c..cc6b355 100644
+--- a/tests/datasets.Rout.save
++++ b/tests/datasets.Rout.save
+@@ -577,6 +577,11 @@ Time-Series [1:240] from 1920 to 1940: 40.6 40.8 44.4 46.7 54.1 58.5 57.7 56.4 5
+  $ Delta 13 C (o/oo)  : num  NA -24.7 -25.3 NA -25.3 ...
+  $ Comments           : chr  "Not enough blood for isotopes." NA NA "Adult not sampled." ...
+ 
++** structure of dataset pinkham
++'data.frame':	54 obs. of  2 variables:
++ $ advertising: int  608 451 529 543 525 549 525 578 609 504 ...
++ $ sales      : int  1016 921 934 976 930 1052 1184 1089 1087 1154 ...
++
+ ** structure of dataset precip
+ Named num [1:70] 67 54.7 7 48.5 14 17.2 20.7 13 43.4 40.2 ...
+  - attr(*, "names")= chr [1:70] "Mobile" "Juneau" "Phoenix" "Little Rock" ...

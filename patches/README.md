@@ -1,7 +1,7 @@
 # Patch for R SVN
 
 [`stats-pacf-wei-trunk.patch`](stats-pacf-wei-trunk.patch) integrates the current
-`pacfwei` implementation into R SVN trunk **revision 90875**. It includes the C
+`pacfwei` 0.3.0 implementation into R SVN trunk **revision 90875**. It includes the C
 and R implementations, mathematical documentation, author credit and email,
 regression tests, and the Pinkham data and help with the Palda (1965) reference.
 
@@ -29,14 +29,17 @@ componentwise partial autocorrelations. `ar.yw(x)$partialacf` retains its
 regression-coefficient interpretation. The univariate calculation retains
 its existing algorithm.
 
-The patch passed strict application checks, standalone C compilation, and
-isolated numerical tests, including C/R agreement, independent projection
-calculations, and exact agreement with the package. The data retain the
-package's values and data-frame attributes. Both help files passed Rd and
-HTML conversion checks.
+Version 0.3.0 adds data-based SVD whitening, Cholesky solves, rank and residual
+covariance safeguards, and safe binary prescaling. Residual matrices are mapped
+back before normalization, preserving the estimator. Shared lag validation
+accepts `Inf`, rejects malformed values consistently, and gives the default lag
+a minimum of one. See [validation and compatibility notes](VALIDATION.md).
 
-**A full build and check of R itself has not been performed.** Rebuild R,
-including `stats` and `datasets`, and run its checks before proposing upstream
-integration. The patch includes native registration and Unix/Windows build
-entries.
+The patch passes strict application checks, standalone compilation, and
+independent raw-data QR comparisons. A complete Windows build of R and its
+base packages at revision 90875 succeeded; all 197 reviewer checks also passed
+inside the rebuilt `stats`/`datasets` namespaces. Both help files pass Rd, HTML,
+and plain-text conversion checks. The patch includes native registration and
+Unix/Windows build entries. Other platforms and the full recommended-package
+check suite remain outside this validation.
 

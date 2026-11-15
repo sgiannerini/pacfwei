@@ -18,95 +18,124 @@ pacf_wei(
 \code{na.action}, at least two observations are required. Multivariate data must
 be finite, complete and have positive marginal variances.}
 
-\item{lag.max}{Maximum lag. For multivariate input, defaults to
-\code{floor(10 * log10(n / m))}, is floored and capped at \eqn{n-1}, and must be
-finite and at least one. Here \eqn{n} is the observation count and \eqn{m}
-is the number of components. Univariate lag handling follows \code{stats::pacf()}.}
+\item{lag.max}{Maximum lag: \code{NULL}, or a real numeric scalar of at least one.
+The default is \code{max(1, floor(10 * log10(n / m)))}, where \eqn{n}{n} is the
+number of observations and \eqn{m}{m} the number of components. Positive
+fractional values are floored and capped at \eqn{n-1}{n - 1}; \code{Inf} requests
+that cap. The same validation applies to univariate and multivariate input.
+Capping does not guarantee that every requested lag is numerically estimable.}
 
 \item{plot}{Whether to plot using the standard \code{acf} method.}
 
 \item{na.action}{Missing-value handler, applied before calculation.
 Passing remaining missing values is not supported for multivariate data.}
 
-\item{...}{Further arguments to the \code{acf} plotting method.}
+\item{...}{Further arguments to the \code{acf} plotting method. Abbreviations of
+\code{method}, such as \code{meth}, are rejected without evaluating their expressions.}
 
 \item{method}{Multivariate recursion: \code{"C"} (default) or \code{"R"}. This argument
-must be named because it follows \code{...}. Univariate input uses the existing
-\code{stats::pacf()} implementation for either choice.}
+must be named in full because it follows \code{...}. Univariate input uses
+\code{stats::pacf()} for either choice, after the shared argument validation.}
 }
 \value{
-An object of class \code{"acf"}, with the standard components \code{acf}, \code{lag},
-\code{type}, \code{n.used}, \code{series} and \code{snames}. For a result named \code{result},
-\code{result$acf} contains the coefficient array, with dimensions
-\eqn{p \times m \times m}, ordered by lag, component at time \eqn{t+s},
-and component at time \eqn{t}. Lags are in time
-units; plotting uses the standard signed cross-lag convention.
-Returned invisibly if \code{plot = TRUE}.
+An object of class \code{"acf"}, with components \code{acf}, \code{lag}, \code{type},
+\code{n.used}, \code{series} and \code{snames}. For a result named \code{result}, \code{result$acf}
+is a \eqn{p\times m\times m}{p x m x m} coefficient array, ordered by lag,
+component at time \eqn{t+s}{t+s}, and component at time \eqn{t}{t}.
+Lags are in time units; plotting uses the standard signed cross-lag
+convention. Returned invisibly if \code{plot = TRUE}.
 }
 \description{
-Computes Wei's partial autocorrelations using either native C or an R
-implementation of the same recursion. The C implementation is the default.
+Computes Wei's partial autocorrelations using a stabilized forward/backward
+recursion. Select the native C implementation (the default) or its R reference.
 Results use the lag convention and plotting interface of \code{stats::pacf()}.
 }
 \details{
-\strong{Definition.} Let \eqn{Z_t} be a centered stationary vector process.
-At lag \eqn{s}, project the vector observations \eqn{Z_{t+s}} and \eqn{Z_t}
-on all the intervening vectors \eqn{Z_{t+1},\ldots,Z_{t+s-1}} and form residuals
-\deqn{u_{s-1,t+s}=Z_{t+s}-\sum_{k=1}^{s-1}\alpha_{s-1,k}Z_{t+s-k},}
-\deqn{v_{s-1,t}=Z_t-\sum_{k=1}^{s-1}\beta_{s-1,k}Z_{t+k}.}
-These are linear projections, not an assumption of Gaussian conditional
-distributions. Write \eqn{U_s=\operatorname{Var}(u_{s-1,t+s})},
-\eqn{V_s=\operatorname{Var}(v_{s-1,t})} and
-\eqn{K_s=\operatorname{Cov}(u_{s-1,t+s},v_{s-1,t})}.
-Let \eqn{D_U(s)} and \eqn{D_V(s)} be diagonal matrices of marginal residual
-standard deviations. In R's lag convention, the returned matrix is
-\deqn{P_R(s)=D_U(s)^{-1}K_sD_V(s)^{-1}.}
-Consequently entry \eqn{(i,j)} is the correlation between the residuals for
-component \eqn{i} at time \eqn{t+s} and component \eqn{j} at time \eqn{t},
-after projecting out the intervening vectors. The individual lag matrix is
-generally nonsymmetric. There is no additional conditioning on the other
-components at time \eqn{t} or \eqn{t+s}.
+\strong{Definition.} Let \eqn{Z_t}{Z[t]} be a centered stationary vector process.
+At lag \eqn{s}{s}, project the observations at times \eqn{t+s}{t+s} and
+\eqn{t}{t} on every intervening vector and form residuals
+\deqn{u_{s-1,t+s}=Z_{t+s}-\sum_{k=1}^{s-1}\alpha_{s-1,k}Z_{t+s-k}.}{
+u = Z[t+s] - sum(k = 1,...,s-1) alpha[s-1,k] Z[t+s-k].}
+\deqn{v_{s-1,t}=Z_t-\sum_{k=1}^{s-1}\beta_{s-1,k}Z_{t+k}.}{
+v = Z[t] - sum(k = 1,...,s-1) beta[s-1,k] Z[t+k].}
+These are linear projections, without a Gaussian distribution assumption.
+Write \eqn{U_s=\operatorname{Var}(u)}{U[s] = Var(u)},
+\eqn{V_s=\operatorname{Var}(v)}{V[s] = Var(v)} and
+\eqn{K_s=\operatorname{Cov}(u,v)}{K[s] = Cov(u, v)}. Let
+\eqn{D_U(s)}{D_U[s]} and \eqn{D_V(s)}{D_V[s]} be diagonal matrices of
+marginal residual standard deviations. The returned lag matrix is
+\deqn{P_R(s)=D_U(s)^{-1}K_sD_V(s)^{-1}.}{
+P_R[s] = inverse(D_U[s]) K[s] inverse(D_V[s]).}
+Entry \eqn{(i,j)}{(i,j)} correlates the residual for component \eqn{i}{i}
+at time \eqn{t+s}{t+s} with that for component \eqn{j}{j} at time \eqn{t}{t}.
+There is no additional conditioning on the other components at those times.
+The lag matrices are generally nonsymmetric.
 
 \strong{Relation to Wei.} Wei (2006, Section 16.5.3, pp. 408--414) uses
-\eqn{\Gamma(s)=\operatorname{Cov}(Z_t,Z_{t+s})} and defines
-\eqn{P(s)=D_V(s)^{-1}V_{vu}(s)D_U(s)^{-1}} in (16.5.43),
-with \eqn{V_{vu}(s)=K_s'}.
-Thus \eqn{P_R(s)=P(s)'}. This transpose is required for consistency with
-\code{stats::acf()}, whose positive-lag entry \code{result$acf[s + 1, i, j]} uses
-component \eqn{i} at time \eqn{t+s} and component \eqn{j} at time \eqn{t}.
-The partial autoregression matrix in (16.5.44) is instead
-\eqn{K_sV_s^{-1}}. Its entries need not lie in \eqn{[-1,1]}.
-These definitions coincide for a univariate stationary process.
+\eqn{\Gamma(s)=\operatorname{Cov}(Z_t,Z_{t+s})}{Gamma[s] = Cov(Z[t], Z[t+s])}
+and the transpose of the returned matrix in (16.5.43):
+\eqn{P_R(s)=P(s)'}{P_R[s] = transpose(P[s])}.
+This follows R's \code{stats::acf()} convention: \code{result$acf[s + 1, i, j]} uses
+component \eqn{i}{i} at time \eqn{t+s}{t+s} and component \eqn{j}{j} at time
+\eqn{t}{t}. The partial autoregression matrix in (16.5.44) is instead
+\eqn{K_s V_s^{-1}}{K[s] inverse(V[s])}; its entries need not lie in
+\eqn{[-1,1]}{[-1,1]}. The definitions coincide for a univariate process.
 
-\strong{Recursion.} With \eqn{C_h=\operatorname{Cov}(Z_{t+h},Z_t)}, initialize
-\eqn{U_1=V_1=C_0}. Using forward and backward coefficients \eqn{F} and
-\eqn{B} from the previous order, compute
-\deqn{K_s=C_s-\sum_{k=1}^{s-1}F_{s-1,k}C_{s-k},\qquad
-F_{s,s}=K_sV_s^{-1},\quad B_{s,s}=K_s'U_s^{-1}.}
-For \eqn{1\leq k<s}, update both coefficient sets from the old order:
-\deqn{F_{s,k}=F_{s-1,k}-F_{s,s}B_{s-1,s-k},\qquad
-B_{s,k}=B_{s-1,k}-B_{s,s}F_{s-1,s-k}.}
+\strong{Recursion.} With
+\eqn{C_h=\operatorname{Cov}(Z_{t+h},Z_t)}{C[h] = Cov(Z[t+h], Z[t])},
+initialize \eqn{U_1=V_1=C_0}{U[1] = V[1] = C[0]}. Using coefficient
+matrices from the previous order, compute
+\deqn{K_s=C_s-\sum_{k=1}^{s-1}F_{s-1,k}C_{s-k}.}{
+K[s] = C[s] - sum(k = 1,...,s-1) F[s-1,k] C[s-k].}
+\deqn{F_{s,s}=K_s V_s^{-1},\quad B_{s,s}=K_s' U_s^{-1}.}{
+F[s,s] = K[s] inverse(V[s]); B[s,s] = transpose(K[s]) inverse(U[s]).}
+For \eqn{1\leq k<s}{1 <= k < s}, update both sets from the old order:
+\deqn{F_{s,k}=F_{s-1,k}-F_{s,s}B_{s-1,s-k}.}{
+F[s,k] = F[s-1,k] - F[s,s] B[s-1,s-k].}
+\deqn{B_{s,k}=B_{s-1,k}-B_{s,s}F_{s-1,s-k}.}{
+B[s,k] = B[s-1,k] - B[s,s] F[s-1,s-k].}
 The residual covariances for the next order are
-\deqn{U_{s+1}=U_s-F_{s,s}K_s',\qquad
-V_{s+1}=V_s-B_{s,s}K_s.}
-This is the forward/backward recursion of (16.5.50)--(16.5.51), expressed
-in R's covariance convention. The displayed inverses describe the mathematics;
-implementations solve systems without explicitly forming matrix inverses.
+\deqn{U_{s+1}=U_s-F_{s,s}K_s',\quad V_{s+1}=V_s-B_{s,s}K_s.}{
+U[s+1] = U[s] - F[s,s] transpose(K[s]); V[s+1] = V[s] - B[s,s] K[s].}
+These are (16.5.50)--(16.5.51) in R's covariance convention.
+The displayed inverses specify the mathematics; both implementations solve
+systems using Cholesky factors without explicitly forming matrix inverses.
 
-\strong{Estimation and numerical behavior.} Covariances are centered,
-common-denominator estimates from \code{stats::acf()}, with denominator \eqn{n}.
-Positive column rescaling improves numerical conditioning without changing
-the estimator. For a valid joint covariance and positive residual variances,
-individual coefficients are bounded by one in modulus, up to roundoff.
-At lag one they equal ordinary lag-one cross-correlations.
-Neither implementation clips correlations or adds a regularization term.
-Singular or numerically singular regression covariances cause errors.
-Short samples relative to the dimension and lag can therefore fail.
-The last requested lag requires no further coefficient solve; lag one is
-defined even for redundant columns having positive marginal variance.
-Both implementations use \eqn{O(m^2 p)} storage and dense
-\eqn{O(m^3 p^2)} arithmetic, where \eqn{p} is the maximum lag.
-They can differ by floating point roundoff near singularity.
+\strong{Numerical stabilization.} Power-of-two prescaling protects the
+floating-point range before centering. Arbitrary marginal normalization
+follows centering, avoiding loss of large-offset differences. Covariance
+estimates use \code{stats::acf()} with denominator \eqn{n}{n}.
+For more than one lag, a full-rank SVD of the centered, marginally normalized
+observation matrix provides \eqn{X=W A}{X = W A}, with
+\eqn{W'W/n=I}{transpose(W) W / n = I}. The recursion uses covariances
+estimated directly from \eqn{W}{W}. Before normalization, its residual
+matrices are transformed back:
+\deqn{U_X=A'U_W A,\quad V_X=A'V_W A,\quad K_X=A'K_W A.}{
+U_X = transpose(A) U_W A; V_X = transpose(A) V_W A; K_X = transpose(A) K_W A.}
+An invertible transformation preserves the span of all intervening vector
+observations, so this leaves the estimator unchanged in exact arithmetic.
+Transforming already normalized correlations would not be equivalent.
+
+No singular directions are silently discarded and no regularization is
+added. SVD singular values must exceed
+\eqn{\max(n,m)\epsilon d_{\max}}{max(n,m) * eps * largest_singular_value},
+where \eqn{\epsilon}{eps} is \code{.Machine$double.eps}. Residual systems that
+require a solve must be positive definite with estimated reciprocal condition
+number at least \eqn{\sqrt{\epsilon}}{sqrt(eps)} in whitened coordinates.
+Invalid joint residual covariances are rejected, including at the final lag;
+eigenvalues down to
+\eqn{-64(2m)\epsilon\max(1,\|H\|_1)}{-64 * (2*m) * eps * max(1, norm(H, "1"))}
+are treated as roundoff for the joint residual block \eqn{H}{H}.
+Exact positive-semidefinite boundaries are allowed. At lag one no SVD or
+regression solve is needed, so redundant columns with positive variances
+are permitted. A coefficient exceeding one in modulus by at most
+\eqn{64m\epsilon}{64 * m * eps} is clamped to the boundary; a larger
+violation raises an error. Short or highly predictable series can still
+produce singular or numerically unreliable higher orders.
+
+Dense arithmetic requires \eqn{O(nm^2+m^3p^2)}{O(n*m^2 + m^3*p^2)} operations
+and \eqn{O(nm+m^2p)}{O(n*m + m^2*p)} storage, where \eqn{p}{p} is the
+maximum lag. C and R can differ by roundoff and borderline failure decisions.
 
 This multivariate definition differs from the partial autoregression
 coefficients returned by \code{stats::pacf()} and \code{stats::ar.yw(x)$partialacf}
@@ -116,12 +145,10 @@ Loading this package changes neither function.
 \examples{
 set.seed(10)
 x <- cbind(x = rnorm(1000, sd = 10000), y = rnorm(1000))
-pc <- pacf_wei(x, lag.max = 10, plot = FALSE)  # C by default
+pc <- pacf_wei(x, lag.max = 10, plot = FALSE)
 pr <- pacf_wei(x, lag.max = 10, plot = FALSE, method = "R")
 stopifnot(isTRUE(all.equal(pc$acf, pr$acf, tolerance = 1e-10)))
-pc$acf
-# Transpose both component axes to use Wei's theoretical convention:
-aperm(pc$acf, c(1, 3, 2))
+aperm(pc$acf, c(1, 3, 2))  # Wei's theoretical orientation
 }
 \references{
 Wei, W. W. S. (2006). \emph{Time Series Analysis: Univariate and Multivariate

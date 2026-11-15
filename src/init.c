@@ -4,10 +4,10 @@
 #include <R_ext/Rdynload.h>
 #include <R_ext/Visibility.h>
 
-extern SEXP pacf_wei_cov(SEXP);
+extern SEXP pacf_wei_cov(SEXP, SEXP);
 
 static const R_CallMethodDef call_methods[] = {
-    {"pacf_wei", (DL_FUNC) &pacf_wei_cov, 1},
+    {"pacf_wei", (DL_FUNC) &pacf_wei_cov, 2},
     {NULL, NULL, 0}
 };
 

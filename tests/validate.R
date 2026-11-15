@@ -12,7 +12,13 @@ pacf_mts <- function(x, lag.max=NULL, convention=c("R","Wei")) {
 }
 pacf_wei <- function(...) pacfwei::pacf_wei(...,method=backend)
 native.symbol <- get("C_pacf_wei", asNamespace("pacfwei"))
-native <- function(cov) .Call(native.symbol, cov)
+native <- function(cov, map = NULL) {
+    if (is.null(map)) {
+        d <- dim(cov)
+        map <- diag(if (length(d) >= 2L) d[2L] else 1L)
+    }
+    .Call(native.symbol, cov, map)
+}
 prepare <- getFromNamespace(".pacf_prepare", "pacfwei")
 original.stats.default <- getS3method("pacf", "default")
 nchecks <- 0L
@@ -65,10 +71,10 @@ cat(R.version.string,"\n")
 set.seed(10)
 scale.example <- cbind(x=rnorm(1000,sd=10000),y=rnorm(1000))
 new <- pacf_mts(scale.example,10)
-old <- stats::pacf(scale.example,10,plot=FALSE)$acf
-cat(sprintf("stats::pacf range [%.12f, %.12f]; C Wei range [%.12f, %.12f]\n",
+old <- stats::ar.yw(scale.example, order.max=10)$partialacf
+cat(sprintf("ar.yw partial coefficient range [%.12f, %.12f]; Wei range [%.12f, %.12f]\n",
             min(old),max(old),min(new),max(new)))
-check(max(abs(old)) > 500,"reported stats::pacf behavior reproduced")
+check(max(abs(old)) > 500,"partial autoregression coefficients can exceed one")
 check(max(abs(new)) <= 1,"scale example gives proper partial correlations")
 near(new,schur_reference(scale.example,10),"scale example vs Schur projection")
 
@@ -96,13 +102,14 @@ for (j in seq_len(ncol(x)))
 near(pacf_mts(as.data.frame(x),p),value,"numeric data-frame input")
 near(pacf_mts(x,1),value[1,,,drop=FALSE],"lag.max one")
 near(pacf_mts(x,3.9),value[1:3,,,drop=FALSE],"fractional lag.max floors")
-check(identical(dim(pacf_mts(x[1:15,1:2],100)),c(14L,2L,2L)),"lag.max caps at n-1")
+check(identical(getFromNamespace(".pacf_lag_max", "pacfwei")(100, 15L, 2L), 14L),
+      "lag.max caps at n-1 (without promising numerically estimable high orders)")
 check(identical(dimnames(value),list(as.character(seq_len(p)),colnames(x),colnames(x))),
       "lag and both series axes are named")
 check(max(abs(stats::ar.yw(scale(x),order.max=p)$partialacf-value)) > .01,
       "standardizing before ar.yw is not the Wei estimator")
 
-for (bad in list(0,-1,NA_real_,Inf,numeric(),c(1,2),"2"))
+for (bad in list(0,-1,NA_real_,NaN,-Inf,numeric(),c(1,2),"2",TRUE))
     throws(pacf_mts(x,bad),paste0("invalid lag.max rejected: ",paste(bad,collapse=",")))
 for (bad in c(NA_real_,NaN,Inf,-Inf)) {
     xx <- x
@@ -120,8 +127,9 @@ near(pacf_mts(duplicate,1)[1,,],stats::acf(duplicate,1,plot=FALSE)$acf[2,,],
      "redundant series permitted at lag one")
 throws(pacf_mts(duplicate,2),"singular regression covariance fails explicitly")
 
-cc <- prepare(x,3)$cov
-near(native(cc),pacf_mts(x,3),"registered native routine matches R API")
+prepared <- prepare(x,3)
+cc <- prepared$cov
+near(native(cc, prepared$map),pacf_mts(x,3),"registered native routine matches R API")
 throws(native(as.integer(cc)),"native rejects integer instead of real covariance")
 throws(native(as.numeric(cc)),"native rejects missing dimensions")
 throws(native(matrix(0,3,3)),"native rejects matrix instead of three-dimensional array")

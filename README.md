@@ -6,7 +6,7 @@
 **Partial autocorrelation for multivariate time series.**
 
 `pacfwei` provides `pacf_wei()`, which implements the multivariate
-partial autocorrelation fucntion described by Wei (2006). It offers a
+partial autocorrelation function described by Wei (2006). It offers a
 fast C implementation and an R implementation of the same
 forward/backward recursion, with C as the default. Both return standard
 `acf` objects for printing, plotting, and extracting coefficients.
@@ -119,19 +119,31 @@ unchanged.
   after `na.action` is applied. The default `stats::na.fail` rejects
   missing values.
 - For multivariate input with $n$ observations and $m$ components, the
-  default maximum lag is `floor(10 * log10(n / m))`. The lag must be at
-  least one and is capped at $n - 1$; set it explicitly when necessary.
+  default maximum lag is `max(1, floor(10 * log10(n / m)))`. A numeric
+  scalar of at least one is required; fractional lags are floored and
+  capped at $n - 1$. `Inf` requests that cap. The same validation
+  applies to univariate input. A requested high order can still be
+  numerically unreliable.
 - Both implementations use centered sample covariances with denominator
-  $n$ and rescale columns internally to improve numerical conditioning.
-  Singular regression systems produce an error. Short samples with many
-  components or large lag orders can fail; neither method regularizes
-  the covariance matrices or clips the correlations.
+  $n$ after power-of-two prescaling and centering. For more than one
+  lag, an SVD supplies well-conditioned coordinates for the recursion.
+  Both implementations transform the residual covariance and
+  cross-covariance matrices back before computing componentwise
+  correlations, preserving the estimator.
+- Cholesky solves, numerical-rank and conditioning checks, and joint
+  residual covariance checks reject unreliable calculations. No singular
+  directions are silently discarded and no regularization is added. Only
+  roundoff-sized excesses beyond one in modulus (at most $64m\epsilon$,
+  where $\epsilon$ is machine precision) are clamped; larger violations
+  produce an error.
+- Name `method` in full. Abbreviations such as `meth` are rejected even
+  with `plot = FALSE`.
 
 ## Patch for R SVN
 
-The [R SVN patch](patches/stats-pacf-wei-trunk.patch) integrates these changes
-into R itself. See the [patch instructions](patches/README.md) for the target
-revision, application commands, and validation status.
+The [R SVN patch](patches/stats-pacf-wei-trunk.patch) integrates these
+changes into R itself. See the [patch instructions](patches/README.md)
+for the target revision, application commands, and validation status.
 
 ## References
 
