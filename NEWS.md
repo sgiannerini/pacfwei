@@ -1,3 +1,8 @@
+# pacfwei 0.3.1
+
+- Reuse LAPACK DLANGE for the native matrix one-norm, matching the routine
+  underlying base R's norm(). Numerical validation policies are unchanged.
+
 # pacfwei 0.3.0
 
 - Stabilize multivariate calculations using SVD whitening of the centered

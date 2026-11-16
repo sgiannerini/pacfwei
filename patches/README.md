@@ -1,7 +1,7 @@
 # Patch for R SVN
 
 [`stats-pacf-wei-trunk.patch`](stats-pacf-wei-trunk.patch) integrates the current
-`pacfwei` 0.3.0 implementation into R SVN trunk **revision 90875**. It includes the C
+`pacfwei` 0.3.1 implementation into R SVN trunk **revision 90875**. It includes the C
 and R implementations, mathematical documentation, author credit and email,
 regression tests, and the Pinkham data and help with the Palda (1965) reference.
 

@@ -49,15 +49,12 @@ static R_xlen_t product(R_xlen_t a, R_xlen_t b)
     return n;
 }
 static double *workspace(R_xlen_t n) { return (double *)R_alloc((size_t)n,sizeof(double)); }
+/* Same LAPACK one-norm used by base::norm(A, "1"). DLANGE does not
+ * reference WORK for this norm, but a valid address is supplied. */
 static double norm1(const double *a, int m)
 {
-    double largest=0;
-    for (int j=0;j<m;++j) {
-        double sum=0;
-        for(int i=0;i<m;++i) sum+=fabs(a[(size_t)i+(size_t)j*m]);
-        if(sum>largest) largest=sum;
-    }
-    return largest;
+    double unused;
+    return F77_CALL(dlange)("1", &m, &m, a, &m, &unused FCONE);
 }
 static void symmetrize(double *a,int m)
 {

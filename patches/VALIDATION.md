@@ -1,3 +1,16 @@
+# Version 0.3.1: reuse of existing R infrastructure
+
+The native one-norm helper now delegates to LAPACK DLANGE, the same routine
+used by base::norm(A, "1"). The R reference already uses norm(), eigen(),
+chol(), rcond(), and triangular solves. Small wrappers retain the joint-block
+construction, numerical policy, and lag-specific diagnostics. isSymmetric()
+has different tolerance semantics and is not substituted silently.
+
+Version 0.3.1 passes R CMD check --no-manual --no-vignettes. The regenerated
+SVN patch passes strict application and isolated integration checks; stats was
+recompiled inside the existing r90875 build and all 197 reviewer checks passed.
+No tolerance or validation policy changed. The results below document 0.3.0;
+its broader build/check scope and timings were not rerun for this norm refactor.
 # pacfwei 0.3.0: numerical revision
 
 This revision addresses the numerical and interface feedback on the initial

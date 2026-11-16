@@ -1,7 +1,7 @@
 Package: pacfwei
 Type: Package
 Title: Componentwise Partial Autocorrelations for Vector Time Series
-Version: 0.3.0
+Version: 0.3.1
 Authors@R: c(person("Simone", "Giannerini", role = "aut",
     email = "simone.giannerini@uniud.it",
     comment = "Original 2007 R and Fortran implementations"),
